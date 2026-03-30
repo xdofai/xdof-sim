@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Wrapper to launch viser_teleop with MuJoCo native viewer on macOS.
+# Sets DYLD_LIBRARY_PATH so mjpython can find libpython.
+set -e
+
+PYTHON_LIB_DIR="$(python3 -c "import sys; print(sys.prefix + '/lib')")"
+export DYLD_LIBRARY_PATH="${PYTHON_LIB_DIR}${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+
+exec uv run mjpython -m xdof_sim.examples.viser_teleop --mujoco-viewer "$@"

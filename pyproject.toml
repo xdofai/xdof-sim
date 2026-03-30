@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xdof-sim"
+version = "0.1.0"
+description = "Standalone MuJoCo simulation environment for the YAM bimanual robot"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+
+dependencies = [
+    "mujoco>=3.0",
+    "gymnasium>=0.29",
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+    "Pillow>=10.0",
+    "PyOpenGL>=3.1",
+    "PyOpenGL-accelerate>=3.1",
+    "vuer[all]>=0.0.53",
+    "params-proto==2.13.2",
+]
+
+[project.optional-dependencies]
+policy = [
+    "torch>=2.0",
+    "termcolor",
+    "wandb",
+]
+teleop = [
+    "pyzmq>=25.0",
+]
+gello = [
+    "pyzmq>=25.0",
+    "dynamixel-sdk>=3.7",
+]
+video = [
+    "imageio[ffmpeg]>=2.31",
+]
+viser = [
+    "viser>=0.2.0",
+    "trimesh>=4.0",
+]
+ik = [
+    "xdof-sim[viser]",
+    "scipy>=1.10",
+]
+all = [
+    "xdof-sim[policy,teleop,gello,video,viser,ik]",
+]
+
+[tool.setuptools.packages.find]
+include = ["xdof_sim*"]
+
+[tool.setuptools.package-data]
+"xdof_sim" = [
+    "models/*.xml",
+    "models/i2rt_yam/**/*",
+    "models/marker/**/*",
+    "examples/episode_seed47/*.npy",
+    "examples/episode_seed47/*.json",
+    "examples/episode_seed56/*.npy",
+    "examples/episode_seed56/*.json",
+    "examples/episode_6ib_seed0/*.npy",
+    "examples/episode_6ib_seed0/*.json",
+    "assets/*.gif",
+]
