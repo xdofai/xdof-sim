@@ -570,8 +570,70 @@ function connectWS() {
   };
 }
 
+// --- Joystick-based VR rig movement ---
+const moveSpeed = 1.2;   // m/s
+const rotSpeed = 0.8;     // rad/s
+const deadzone = 0.15;
+let prevTime = performance.now();
+
+function applyJoystickMovement(dt) {
+  const session = renderer.xr.getSession();
+  if (!session) return;
+
+  let leftAxes = [0, 0];
+  let rightAxes = [0, 0];
+
+  for (const source of session.inputSources) {
+    if (!source.gamepad) continue;
+    const axes = source.gamepad.axes;  // [0]=x, [1]=y (some have 4 axes: [2]=x, [3]=y)
+    if (source.handedness === 'left') {
+      leftAxes = axes.length >= 4 ? [axes[2], axes[3]] : [axes[0], axes[1]];
+    } else if (source.handedness === 'right') {
+      rightAxes = axes.length >= 4 ? [axes[2], axes[3]] : [axes[0], axes[1]];
+    }
+  }
+
+  // Apply deadzone
+  const lx = Math.abs(leftAxes[0]) > deadzone ? leftAxes[0] : 0;
+  const ly = Math.abs(leftAxes[1]) > deadzone ? leftAxes[1] : 0;
+  const rx = Math.abs(rightAxes[0]) > deadzone ? rightAxes[0] : 0;
+  const ry = Math.abs(rightAxes[1]) > deadzone ? rightAxes[1] : 0;
+
+  if (lx === 0 && ly === 0 && rx === 0 && ry === 0) return;
+
+  // Right stick X: yaw rotation
+  if (rx !== 0) {
+    vrRig.rotation.y += rx * rotSpeed * dt;
+  }
+
+  // Right stick Y: vertical movement
+  if (ry !== 0) {
+    vrRig.position.y -= ry * moveSpeed * dt;
+  }
+
+  // Left stick: XZ movement relative to rig facing direction
+  if (lx !== 0 || ly !== 0) {
+    const forward = new THREE.Vector3(0, 0, -1);
+    forward.applyQuaternion(vrRig.quaternion);
+    forward.y = 0;
+    forward.normalize();
+    const right = new THREE.Vector3(1, 0, 0);
+    right.applyQuaternion(vrRig.quaternion);
+    right.y = 0;
+    right.normalize();
+
+    vrRig.position.addScaledVector(right, lx * moveSpeed * dt);
+    vrRig.position.addScaledVector(forward, -ly * moveSpeed * dt);
+  }
+}
+
 // Render loop
 renderer.setAnimationLoop(() => {
+  const now = performance.now();
+  const dt = Math.min((now - prevTime) / 1000, 0.1);  // cap to avoid jumps
+  prevTime = now;
+
+  applyJoystickMovement(dt);
   renderer.render(scene, camera);
 });
 
