@@ -571,8 +571,8 @@ function connectWS() {
 }
 
 // --- Joystick-based VR rig movement ---
-const moveSpeed = 2.0;   // m/s
-const rotSpeed = 1.5;     // rad/s
+const moveSpeed = 1.2;   // m/s
+const rotSpeed = 0.8;     // rad/s
 const deadzone = 0.15;
 let prevTime = performance.now();
 
@@ -603,7 +603,7 @@ function applyJoystickMovement(dt) {
 
   // Right stick X: yaw rotation
   if (rx !== 0) {
-    vrRig.rotation.y -= rx * rotSpeed * dt;
+    vrRig.rotation.y += rx * rotSpeed * dt;
   }
 
   // Right stick Y: vertical movement
