@@ -19,11 +19,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import json
 import os
+import re
 import struct
 import threading
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 os.environ.pop("MUJOCO_GL", None)
@@ -365,14 +368,14 @@ VR_HTML = """<!DOCTYPE html>
   body { margin: 0; overflow: hidden; background: #1a1a2e; }
   #info { position: absolute; top: 10px; width: 100%; text-align: center;
           color: #fff; font-family: monospace; font-size: 14px; z-index: 1; }
-  #vr-btn { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
-            padding: 12px 24px; font-size: 18px; cursor: pointer; z-index: 1;
-            background: #4CAF50; color: white; border: none; border-radius: 8px; }
+  #vr-controls { position: absolute; bottom: 20px; width: 100%; text-align: center; z-index: 1;
+    display: flex; justify-content: center; gap: 10px; }
+  #vr-controls button { position: static !important; transform: none !important; }
 </style>
 </head>
 <body>
 <div id="info">Connecting...</div>
-<button id="vr-btn" style="display:none">Enter VR</button>
+<div id="vr-controls"></div>
 
 <script type="importmap">
 {
@@ -431,7 +434,7 @@ scene.add(vrRig);
 vrRig.add(camera);
 
 // Renderer with WebXR
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.xr.enabled = true;
@@ -441,7 +444,67 @@ document.body.appendChild(renderer.domElement);
 
 // VR button
 const vrBtn = VRButton.createButton(renderer);
-document.body.appendChild(vrBtn);
+document.getElementById('vr-controls').appendChild(vrBtn);
+
+// AR/Passthrough button — custom handler
+const arBtn = document.createElement('button');
+arBtn.textContent = 'START AR';
+// Match VRButton style after a tick (VRButton applies styles async)
+setTimeout(() => {
+  const vbStyle = window.getComputedStyle(vrBtn);
+  arBtn.style.padding = vbStyle.padding;
+  arBtn.style.fontSize = vbStyle.fontSize;
+  arBtn.style.fontFamily = vbStyle.fontFamily;
+  arBtn.style.border = vbStyle.border;
+  arBtn.style.borderRadius = vbStyle.borderRadius;
+  arBtn.style.color = vbStyle.color;
+  arBtn.style.cursor = 'pointer';
+  arBtn.style.background = '#1565c0';
+  arBtn.style.opacity = vbStyle.opacity;
+}, 100);
+arBtn.addEventListener('click', async () => {
+  scene.background = null;
+  renderer.setClearColor(0x000000, 0);
+  ground.visible = false;
+  grid.visible = false;
+  try {
+    const session = await navigator.xr.requestSession('immersive-ar', {
+      requiredFeatures: ['local-floor'],
+      optionalFeatures: ['hand-tracking'],
+    });
+    renderer.xr.setSession(session);
+    session.addEventListener('end', () => {
+      scene.background = new THREE.Color(0x1a1a2e);
+      renderer.setClearColor(0x000000, 1);
+      ground.visible = true;
+      grid.visible = true;
+      vrRig.position.y = vrPos[1];
+    });
+  } catch (e) {
+    console.error('AR failed, trying VR with passthrough:', e);
+    try {
+      const session = await navigator.xr.requestSession('immersive-vr', {
+        requiredFeatures: ['local-floor'],
+        optionalFeatures: ['hand-tracking', 'passthrough'],
+      });
+      renderer.xr.setSession(session);
+      session.addEventListener('end', () => {
+        scene.background = new THREE.Color(0x1a1a2e);
+        renderer.setClearColor(0x000000, 1);
+        ground.visible = true;
+        grid.visible = true;
+        vrRig.position.y = vrPos[1];
+      });
+    } catch (e2) {
+      console.error('Passthrough failed:', e2);
+      scene.background = new THREE.Color(0x1a1a2e);
+      ground.visible = true;
+      grid.visible = true;
+    }
+  }
+});
+document.getElementById('vr-controls').appendChild(arBtn);
+
 
 // Orbit controls for non-VR (use vr target as orbit target too)
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -570,6 +633,92 @@ function connectWS() {
   };
 }
 
+// VR controller tracking (for --mocap mode)
+const controllerGrip0 = renderer.xr.getControllerGrip(0);
+const controllerGrip1 = renderer.xr.getControllerGrip(1);
+scene.add(controllerGrip0);
+scene.add(controllerGrip1);
+
+function getTriggerValue(handedness) {
+  const session = renderer.xr.getSession();
+  if (!session) return 0;
+  for (const source of session.inputSources) {
+    if (source.handedness === handedness && source.gamepad) {
+      return source.gamepad.buttons[0] ? source.gamepad.buttons[0].value : 0;
+    }
+  }
+  return 0;
+}
+
+function getGripButton(handedness) {
+  const session = renderer.xr.getSession();
+  if (!session) return false;
+  for (const source of session.inputSources) {
+    if (source.handedness === handedness && source.gamepad) {
+      return source.gamepad.buttons[1] ? source.gamepad.buttons[1].pressed : false;
+    }
+  }
+  return false;
+}
+
+// Mocap state for relative control
+const grabState = {
+  left: { held: false, ctrlAnchorPos: new THREE.Vector3(), ctrlAnchorQuat: new THREE.Quaternion(),
+          mocapAnchorPos: new THREE.Vector3(), mocapAnchorQuat: new THREE.Quaternion() },
+  right: { held: false, ctrlAnchorPos: new THREE.Vector3(), ctrlAnchorQuat: new THREE.Quaternion(),
+           mocapAnchorPos: new THREE.Vector3(), mocapAnchorQuat: new THREE.Quaternion() },
+};
+const lastMocapPos = {};
+const lastMocapQuat = {};
+
+// Inverse of sceneRoot rotation to transform controller world coords -> scene local coords
+const sceneRotInv = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, -Math.PI / 2, 0));
+
+function getLocalGripPose(grip) {
+  // Transform grip world position/quaternion into sceneRoot local frame
+  const pos = grip.position.clone().applyQuaternion(sceneRotInv);
+  const quat = sceneRotInv.clone().multiply(grip.quaternion);
+  return { pos, quat };
+}
+
+function updateControllerMocap(handedness, grip, mocapId) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const pressed = getGripButton(handedness);
+  const state = grabState[handedness];
+  const local = getLocalGripPose(grip);
+
+  if (pressed && !state.held) {
+    state.held = true;
+    state.ctrlAnchorPos.copy(local.pos);
+    state.ctrlAnchorQuat.copy(local.quat);
+    if (lastMocapPos[mocapId]) {
+      state.mocapAnchorPos.copy(lastMocapPos[mocapId]);
+      state.mocapAnchorQuat.copy(lastMocapQuat[mocapId]);
+    }
+    return;
+  }
+  if (!pressed) { state.held = false; return; }
+
+  const deltaPos = local.pos.clone().sub(state.ctrlAnchorPos);
+  const newPos = state.mocapAnchorPos.clone().add(deltaPos);
+  const deltaQuat = local.quat.clone().multiply(state.ctrlAnchorQuat.clone().invert());
+  const newQuat = deltaQuat.clone().multiply(state.mocapAnchorQuat);
+
+  if (!lastMocapPos[mocapId]) lastMocapPos[mocapId] = new THREE.Vector3();
+  if (!lastMocapQuat[mocapId]) lastMocapQuat[mocapId] = new THREE.Quaternion();
+  lastMocapPos[mocapId].copy(newPos);
+  lastMocapQuat[mocapId].copy(newQuat);
+
+  ws.send(JSON.stringify({
+    type: 'mocap', mocap_id: mocapId,
+    position: [newPos.x, newPos.y, newPos.z],
+    quaternion: [newQuat.x, newQuat.y, newQuat.z, newQuat.w],
+  }));
+}
+
+// Seed initial mocap positions
+let _mocapSeeded = false;
+
 // --- Joystick-based VR rig movement ---
 const moveSpeed = 1.2;   // m/s
 const rotSpeed = 0.8;     // rad/s
@@ -634,6 +783,23 @@ renderer.setAnimationLoop(() => {
   prevTime = now;
 
   applyJoystickMovement(dt);
+  if (!_mocapSeeded && window.__MOCAP_INIT__) {
+    for (const m of window.__MOCAP_INIT__) {
+      lastMocapPos[m.id] = new THREE.Vector3(m.pos[0], m.pos[1], m.pos[2]);
+      lastMocapQuat[m.id] = new THREE.Quaternion(0, 0, 0, 1);
+    }
+    _mocapSeeded = true;
+  }
+  if (renderer.xr.isPresenting && window.__MOCAP__) {
+    updateControllerMocap('left', controllerGrip0, 0);
+    updateControllerMocap('right', controllerGrip1, 1);
+
+    const leftTrigger = getTriggerValue('left');
+    const rightTrigger = getTriggerValue('right');
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'trigger', left: leftTrigger, right: rightTrigger }));
+    }
+  }
   renderer.render(scene, camera);
 });
 
@@ -645,6 +811,208 @@ loadScene();
 
 
 # ---------------------------------------------------------------------------
+# Scene XML rewriting
+# ---------------------------------------------------------------------------
+
+_FLEXIBLE_TEMPLATE_SCENE = Path(__file__).resolve().parents[1] / "models" / "yam_flexible_chess_scene.xml"
+_FLEXIBLE_MESH_NAMES = ("flexible_base", "linear_module", "soft_tips")
+_FLEXIBLE_BODY_SPECS = (
+    ("left_link_6", {"left_link_left_finger", "left_link_right_finger", "left_flex_gripper"}, "left_flex_gripper"),
+    ("right_link_6", {"right_link_left_finger", "right_link_right_finger", "right_flex_gripper"}, "right_flex_gripper"),
+)
+_FLEXIBLE_EQUALITY_PAIRS = (
+    ("left_left_finger", "left_right_finger"),
+    ("right_left_finger", "right_right_finger"),
+)
+_FLEXIBLE_ACTUATORS = ("left_gripper", "right_gripper")
+_FLEXIBLE_CONTACT_PAIRS = (
+    ("left_flex_gripper", "left_linear_module"),
+    ("left_flex_gripper", "left_linear_module_2"),
+    ("left_linear_module", "left_linear_module_2"),
+    ("right_flex_gripper", "right_linear_module"),
+    ("right_flex_gripper", "right_linear_module_2"),
+    ("right_linear_module", "right_linear_module_2"),
+)
+
+
+def _load_xml_root(xml_or_path: str | Path) -> ET.Element:
+    if isinstance(xml_or_path, Path):
+        return ET.parse(xml_or_path).getroot()
+    return ET.fromstring(xml_or_path)
+
+
+def _xml_to_string(root: ET.Element) -> str:
+    if hasattr(ET, "indent"):
+        ET.indent(root, space="  ")
+    return ET.tostring(root, encoding="unicode")
+
+
+def _replace_named_child(parent: ET.Element, tag: str, name: str, new_child: ET.Element) -> None:
+    for idx, child in enumerate(list(parent)):
+        if child.tag == tag and child.get("name") == name:
+            parent.remove(child)
+            parent.insert(idx, copy.deepcopy(new_child))
+            return
+    parent.append(copy.deepcopy(new_child))
+
+
+def _copy_flexible_mesh_for_scene(root: ET.Element, template_mesh: ET.Element) -> ET.Element:
+    mesh = copy.deepcopy(template_mesh)
+    compiler = root.find("compiler")
+    meshdir = compiler.get("meshdir") if compiler is not None else None
+    file_attr = mesh.get("file")
+    if file_attr and not meshdir and not file_attr.startswith("assets/"):
+        mesh.set("file", f"assets/{file_attr}")
+    return mesh
+
+
+def _apply_flexible_gripper_xml(xml: str) -> str:
+    root = _load_xml_root(xml)
+    template_root = _load_xml_root(_FLEXIBLE_TEMPLATE_SCENE)
+
+    asset = root.find("asset")
+    template_asset = template_root.find("asset")
+    if asset is None or template_asset is None:
+        raise ValueError("Scene XML is missing <asset> section")
+
+    for mesh_name in _FLEXIBLE_MESH_NAMES:
+        for child in list(asset):
+            if child.tag == "mesh" and child.get("name") == mesh_name:
+                asset.remove(child)
+        template_mesh = template_asset.find(f"./mesh[@name='{mesh_name}']")
+        if template_mesh is None:
+            raise ValueError(f"Flexible gripper template is missing mesh '{mesh_name}'")
+        asset.append(_copy_flexible_mesh_for_scene(root, template_mesh))
+
+    for parent_name, remove_names, template_name in _FLEXIBLE_BODY_SPECS:
+        parent = root.find(f".//body[@name='{parent_name}']")
+        template_body = template_root.find(f".//body[@name='{template_name}']")
+        if parent is None or template_body is None:
+            raise ValueError(f"Unable to locate flexible gripper body '{template_name}'")
+        for child in list(parent):
+            if child.tag == "body" and child.get("name") in remove_names:
+                parent.remove(child)
+        parent.append(copy.deepcopy(template_body))
+
+    equality = root.find("equality")
+    template_equality = template_root.find("equality")
+    if equality is None or template_equality is None:
+        raise ValueError("Scene XML is missing <equality> section")
+    for child in list(equality):
+        if child.tag != "joint":
+            continue
+        pair = (child.get("joint1"), child.get("joint2"))
+        if pair in _FLEXIBLE_EQUALITY_PAIRS or pair[::-1] in _FLEXIBLE_EQUALITY_PAIRS:
+            equality.remove(child)
+    for joint1, joint2 in _FLEXIBLE_EQUALITY_PAIRS:
+        template_joint = template_equality.find(f"./joint[@joint1='{joint1}'][@joint2='{joint2}']")
+        if template_joint is None:
+            raise ValueError(f"Flexible gripper template is missing equality joint {joint1}/{joint2}")
+        equality.append(copy.deepcopy(template_joint))
+
+    actuator = root.find("actuator")
+    template_actuator = template_root.find("actuator")
+    if actuator is None or template_actuator is None:
+        raise ValueError("Scene XML is missing <actuator> section")
+    for actuator_name in _FLEXIBLE_ACTUATORS:
+        template_position = template_actuator.find(f"./position[@name='{actuator_name}']")
+        if template_position is None:
+            raise ValueError(f"Flexible gripper template is missing actuator '{actuator_name}'")
+        _replace_named_child(actuator, "position", actuator_name, template_position)
+
+    template_contact = template_root.find("contact")
+    contact = root.find("contact")
+    if template_contact is not None:
+        if contact is None:
+            contact = ET.SubElement(root, "contact")
+        for child in list(contact):
+            if child.tag != "exclude":
+                continue
+            pair = (child.get("body1"), child.get("body2"))
+            if pair in _FLEXIBLE_CONTACT_PAIRS or pair[::-1] in _FLEXIBLE_CONTACT_PAIRS:
+                contact.remove(child)
+        seen_pairs: set[tuple[str | None, str | None]] = set()
+        for exclude in template_contact.findall("./exclude"):
+            pair = (exclude.get("body1"), exclude.get("body2"))
+            if pair not in _FLEXIBLE_CONTACT_PAIRS or pair in seen_pairs:
+                continue
+            contact.append(copy.deepcopy(exclude))
+            seen_pairs.add(pair)
+
+    return _xml_to_string(root)
+
+
+def _apply_clean_xml(xml: str) -> str:
+    xml = re.sub(r'<geom[^>]*name="floor"[^/]*/>', '', xml)
+    xml = re.sub(r'<geom[^>]*name="back_wall"[^/]*/>', '', xml, flags=re.DOTALL)
+    xml = re.sub(r'<geom[^>]*name="left_wall"[^/]*/>', '', xml, flags=re.DOTALL)
+    xml = re.sub(r'<geom[^>]*name="right_wall"[^/]*/>', '', xml, flags=re.DOTALL)
+    xml = re.sub(r'<geom[^>]*mesh="base_visual_gate"[^/]*/>', '', xml, flags=re.DOTALL)
+    pos = xml.find('<body name="gate_collision"')
+    if pos >= 0:
+        depth, i = 0, pos
+        while i < len(xml):
+            if xml[i:i+5] == '<body':
+                depth += 1
+            if xml[i:i+7] == '</body>':
+                depth -= 1
+                if depth == 0:
+                    xml = xml[:pos] + xml[i+7:]
+                    break
+            i += 1
+    for cam in ['overhead_camera', 'left_side_camera', 'right_side_camera']:
+        xml = re.sub(rf'<body name="{cam}"[^>]*>.*?</body>', '', xml, flags=re.DOTALL)
+    print("Clean mode: removed cage, walls, floor, cameras")
+    return xml
+
+
+def _apply_mocap_xml(xml: str, *, debug: bool) -> str:
+    left_mocap_geom = ""
+    right_mocap_geom = ""
+    if debug:
+        left_mocap_geom = '\n      <geom type="box" size="0.02 0.02 0.02" contype="0" conaffinity="0" rgba="0.2 0.9 0.2 0.3" group="2"/>'
+        right_mocap_geom = '\n      <geom type="box" size="0.02 0.02 0.02" contype="0" conaffinity="0" rgba="0.9 0.2 0.2 0.3" group="2"/>'
+    mocap_xml = f"""
+    <!-- Mocap targets for VR controller arm control -->
+    <body mocap="true" name="left_mocap" pos="0.6295 0.3100 1.1426" quat="1 0 0 0">
+      <site name="left_mocap_site" size="0.01" type="sphere" rgba="0.2 0.9 0.2 0.5"/>{left_mocap_geom}
+    </body>
+    <body mocap="true" name="right_mocap" pos="0.6295 -0.3100 1.1426" quat="1 0 0 0">
+      <site name="right_mocap_site" size="0.01" type="sphere" rgba="0.9 0.2 0.2 0.5"/>{right_mocap_geom}
+    </body>
+"""
+    xml = xml.replace('</worldbody>', mocap_xml + '  </worldbody>')
+    weld_xml = '    <weld name="left_mocap_weld" site1="left_mocap_site" site2="left_grasp_site"/>\n    <weld name="right_mocap_weld" site1="right_mocap_site" site2="right_grasp_site"/>\n'
+    if '<equality>' in xml:
+        xml = xml.replace('</equality>', weld_xml + '  </equality>')
+    else:
+        xml = xml.replace('</worldbody>', '</worldbody>\n  <equality>\n' + weld_xml + '  </equality>')
+    print("Mocap mode: added mocap bodies + weld constraints")
+    return xml
+
+
+def _build_scene_xml(
+    scene_path: Path,
+    *,
+    clean: bool,
+    mocap: bool,
+    flexible_gripper: bool,
+    debug: bool,
+) -> str:
+    with open(scene_path) as f:
+        xml = f.read()
+
+    if flexible_gripper:
+        xml = _apply_flexible_gripper_xml(xml)
+        print("Flexible gripper mode: swapped in flexible gripper assembly")
+    if clean:
+        xml = _apply_clean_xml(xml)
+    if mocap:
+        xml = _apply_mocap_xml(xml, debug=debug)
+    return xml
+
+
+# ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
 
@@ -652,8 +1020,8 @@ def main():
     parser = argparse.ArgumentParser(description="Lightweight VR streaming teleop")
     parser.add_argument("--task", type=str, default="blocks",
                         choices=["bottles", "marker", "ball_sorting", "empty",
-                                 "dishrack", "chess", "chess2", "blocks",
-                                 "mug_tree", "mug_flip"])
+                                 "dishrack", "chess", "chess_flexible", "chess2", "blocks",
+                                 "mug_tree", "mug_flip", "jenga", "building_blocks", "sweep", "drawer", "pour"])
     parser.add_argument("--port", type=int, default=8012)
     parser.add_argument("--left-leader", type=str, default="left")
     parser.add_argument("--right-leader", type=str, default="right")
@@ -668,10 +1036,41 @@ def main():
     parser.add_argument("--vr-target", type=float, nargs=3, default=[0.0, 0.75, 0.0],
                         metavar=("X", "Y", "Z"),
                         help="Point the VR user looks at in Y-up coords (default: 0 0.75 0)")
+    parser.add_argument("--clean", action="store_true",
+                        help="Remove static visual clutter (cage, walls, table, floor visuals). Keeps collision.")
+    parser.add_argument("--flexible-gripper", action="store_true",
+                        help="Swap the standard YAM finger bodies for the flexible gripper assembly at launch.")
+    parser.add_argument("--mocap", action="store_true",
+                        help="Control arms with VR controllers via mocap weld constraints instead of GELLO")
     args = parser.parse_args()
 
     import xdof_sim
-    env = xdof_sim.make_env(scene="hybrid", task=args.task, render_cameras=False)
+    from xdof_sim.env import _SCENE_XMLS
+
+    need_xml_edit = args.clean or args.mocap or args.flexible_gripper
+    if need_xml_edit:
+        scene_path = _SCENE_XMLS.get(args.task)
+        xml = _build_scene_xml(
+            scene_path,
+            clean=args.clean,
+            mocap=args.mocap,
+            flexible_gripper=args.flexible_gripper,
+            debug=args.debug,
+        )
+
+        from xdof_sim import env as _env_mod
+        orig_xmls = _env_mod._SCENE_XMLS.copy()
+        tmp_path = scene_path.parent / f".vr_streamer_{args.task}_{os.getpid()}.xml"
+        try:
+            tmp_path.write_text(xml)
+            _env_mod._SCENE_XMLS[args.task] = tmp_path
+            env = xdof_sim.make_env(scene="hybrid", task=args.task, render_cameras=False)
+        finally:
+            _env_mod._SCENE_XMLS = orig_xmls
+            tmp_path.unlink(missing_ok=True)
+    else:
+        env = xdof_sim.make_env(scene="hybrid", task=args.task, render_cameras=False)
+
     model = env.model
     data = env.data
 
@@ -684,6 +1083,7 @@ def main():
     if mesh_dir.exists():
         shutil.rmtree(mesh_dir)
     body_info = export_body_glbs(model, mesh_dir)
+
     fixed_ids = [bid for bid, info in body_info.items() if info["is_fixed"]]
     dynamic_ids = [bid for bid, info in body_info.items() if not info["is_fixed"]]
     all_ids = list(body_info.keys())
@@ -738,32 +1138,97 @@ def main():
     step_count = [0]
     frame_bytes = [build_frame_buffer()]
 
+    # Mocap control state
+    pending_mocap_updates = []
+    pending_trigger = [None]
+    R_inv = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=float)  # Y-up to Z-up
+
+    # Find gripper actuator IDs for trigger control
+    gripper_ids = {}
+    if args.mocap:
+        for i in range(model.nu):
+            aname = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, i) or ""
+            if "left_gripper" in aname:
+                jid = model.actuator_trnid[i][0]
+                lo, hi = model.actuator_ctrlrange[i]
+                gripper_ids["left"] = (i, lo, hi)
+            elif "right_gripper" in aname:
+                jid = model.actuator_trnid[i][0]
+                lo, hi = model.actuator_ctrlrange[i]
+                gripper_ids["right"] = (i, lo, hi)
+        print(f"Mocap gripper IDs: {gripper_ids}")
+
     def physics_loop():
         nonlocal state
         dt = 1.0 / args.control_rate
+        n_substeps = max(1, round(dt / model.opt.timestep))
 
         while True:
             t0 = time.time()
 
-            left_pos = poll_leader(left_sub)
-            right_pos = poll_leader(right_sub)
-
-            if left_pos is not None or right_pos is not None:
-                if not connected[0]:
-                    connected[0] = True
-                    print("GELLO connected!")
-
-                action = state.copy()
-                if left_pos is not None and len(left_pos) >= 7:
-                    action[:7] = left_pos[:7]
-                if right_pos is not None and len(right_pos) >= 7:
-                    action[7:14] = right_pos[:7]
-
+            if args.mocap:
+                # Apply mocap updates from VR controllers
                 with lock:
-                    env._step_single(action)
+                    while pending_mocap_updates:
+                        update = pending_mocap_updates.pop(0)
+                        mid = update.get("mocap_id", -1)
+                        if 0 <= mid < model.nmocap:
+                            p = update["position"]
+                            q = update["quaternion"]
+                            # Convert Y-up to Z-up
+                            pos_zup = R_inv @ np.array([p[0], p[1], p[2]])
+                            from scipy.spatial.transform import Rotation as _Rot
+                            mat_yup = _Rot.from_quat([q[0], q[1], q[2], q[3]]).as_matrix()
+                            mat_zup = R_inv @ mat_yup @ R_inv.T
+                            q_zup = _Rot.from_matrix(mat_zup).as_quat()  # xyzw
+                            data.mocap_pos[mid] = pos_zup
+                            data.mocap_quat[mid] = [q_zup[3], q_zup[0], q_zup[1], q_zup[2]]  # wxyz
+
+                    # Apply trigger -> gripper
+                    trig = pending_trigger[0]
+                    if trig:
+                        pending_trigger[0] = None
+                        for side in ["left", "right"]:
+                            info = gripper_ids.get(side)
+                            if info:
+                                aid, lo, hi = info
+                                val = 1.0 - trig.get(side, 0)
+                                data.ctrl[aid] = lo + val * (hi - lo)
+
+                    # Set arm ctrl to follow current qpos so actuators don't fight the welds
+                    for i in range(model.nu):
+                        aname = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, i) or ""
+                        if "gripper" not in aname:
+                            jid = model.actuator_trnid[i][0]
+                            data.ctrl[i] = data.qpos[model.jnt_qposadr[jid]]
+
+                    # Step physics
+                    for _ in range(n_substeps):
+                        mujoco.mj_step(model, data)
                     state = env.get_obs()["state"].copy()
                     frame_bytes[0] = build_frame_buffer()
                 step_count[0] += 1
+            else:
+                # GELLO control
+                left_pos = poll_leader(left_sub)
+                right_pos = poll_leader(right_sub)
+
+                if left_pos is not None or right_pos is not None:
+                    if not connected[0]:
+                        connected[0] = True
+                        print("GELLO connected!")
+
+                    action = state.copy()
+                    if left_pos is not None and len(left_pos) >= 7:
+                        action[:7] = left_pos[:7]
+                    if right_pos is not None and len(right_pos) >= 7:
+                        action[7:14] = right_pos[:7]
+
+                    with lock:
+                        env._step_single(action)
+                        state = env.get_obs()["state"].copy()
+                        frame_bytes[0] = build_frame_buffer()
+                    step_count[0] += 1
 
             elapsed = time.time() - t0
             remaining = dt - elapsed
@@ -784,6 +1249,14 @@ def main():
             config_script += 'window.__DEBUG__ = true;'
         config_script += f'window.__VR_POS__ = {args.vr_pos};'
         config_script += f'window.__VR_TARGET__ = {args.vr_target};'
+        if args.mocap:
+            config_script += 'window.__MOCAP__ = true;'
+            # Send initial mocap positions in Y-up coords
+            mocap_init = []
+            for i in range(model.nmocap):
+                p = R_conv @ data.mocap_pos[i]
+                mocap_init.append(f'{{id:{i},pos:[{p[0]:.4f},{p[1]:.4f},{p[2]:.4f}]}}')
+            config_script += f'window.__MOCAP_INIT__ = [{",".join(mocap_init)}];'
         config_script += '</script>'
         html = VR_HTML.replace('</head>', config_script + '</head>')
         return web.Response(text=html, content_type="text/html")
@@ -813,7 +1286,16 @@ def main():
 
         try:
             async for msg in ws:
-                pass  # We only send, never receive
+                if msg.type == web.WSMsgType.TEXT and args.mocap:
+                    import json
+                    try:
+                        d = json.loads(msg.data)
+                        if d.get("type") == "mocap":
+                            pending_mocap_updates.append(d)
+                        elif d.get("type") == "trigger":
+                            pending_trigger[0] = d
+                    except Exception:
+                        pass
         finally:
             ws_clients.remove(ws)
             print(f"VR client disconnected ({len(ws_clients)} remaining)")

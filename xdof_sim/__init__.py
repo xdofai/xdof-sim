@@ -10,8 +10,6 @@ __version__ = "0.1.0"
 # Per-task physics overrides — contact-heavy scenes benefit from a coarser
 # timestep with proportionally reduced decimation to keep ~30 Hz control.
 _TASK_PHYSICS_DEFAULTS: dict[str, dict] = {
-    "pour": {"physics_dt": 0.0008, "control_decimation": 11},  # 0.003*11≈33ms≈30Hz
-    "drawer": {"physics_dt": 0.0004, "control_decimation": 11},  # 0.003*11≈33ms≈30Hz
 }
 
 

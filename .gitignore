@@ -13,3 +13,7 @@ venv/
 .mypy_cache/
 .ruff_cache/
 .DS_Store
+xdof_sim/models/_clean_tmp.xml
+xdof_sim/models/_tmp_scene.xml
+xdof_sim/models/.vr_streamer_*.xml
+xdof_sim/models/~$*.xml

@@ -28,7 +28,7 @@
       <default class="collision">
         <geom group="3" type="capsule" friction="2.0 0.1 0.01" condim="6"/>
         <default class="sphere_collision">
-          <geom size="0.0006 0 0" type="sphere" rgba="1 0 0 1" friction="4.0 0.1 0.01" condim="6" solimp="0.998 0.998 0.001" solref="0.004 1"/>
+          <geom size="0.0006 0 0" type="sphere" rgba="1 0 0 1" friction="4.0 0.1 0.01" condim="6" solimp="0.998 0.998 0.001" solref="0.004 1" priority="2"/>
         </default>
       </default>
       <default class="finger">
@@ -314,9 +314,9 @@
                           rgba="0.381493 0.492734 0.780446 1"/>
                         <geom class="collision" size="0.003 0.022" pos="-0.005 -0.014 0.04" quat="1 -0.2 0 0"
                           rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" type="box" size="0.006 0.002 0.04" pos="0 -0.0024 0.046" quat="1 0 0 0"
+                        <geom class="collision" type="box" size="0.006 0.002 0.04" friction="3.0 0.1 0.01" priority="2" solref="0.004 1" solimp="0.998 0.998 0.001" pos="0 -0.0024 0.046" quat="1 0 0 0"
                           rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" type="box" size="0.006 0.002 0.039" pos="0.027 -0.0024 0.053"
+                        <geom class="collision" type="box" size="0.006 0.002 0.039" friction="3.0 0.1 0.01" priority="2" solref="0.004 1" solimp="0.998 0.998 0.001" pos="0.027 -0.0024 0.053"
                           quat="1 0 2.5 0" rgba="0.381493 0.492734 0.780446 1"/>
                         <geom class="sphere_collision" pos="0.003  -0.0004 0.078"/>
                         <geom class="sphere_collision" pos="-0.003 -0.0004 0.078"/>
@@ -345,9 +345,9 @@
                           rgba="0.381493 0.492734 0.780446 1"/>
                         <geom class="collision" size="0.003 0.022" pos="-0.005 -0.014 0.04" quat="1 -0.2 0 0"
                           rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" type="box" size="0.006 0.002 0.04" pos="0 -0.0024 0.046" quat="1 0 0 0"
+                        <geom class="collision" type="box" size="0.006 0.002 0.04" friction="3.0 0.1 0.01" priority="2" solref="0.004 1" solimp="0.998 0.998 0.001" pos="0 -0.0024 0.046" quat="1 0 0 0"
                           rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" type="box" size="0.006 0.002 0.039" pos="-0.027 -0.0024 0.053"
+                        <geom class="collision" type="box" size="0.006 0.002 0.039" friction="3.0 0.1 0.01" priority="2" solref="0.004 1" solimp="0.998 0.998 0.001" pos="-0.027 -0.0024 0.053"
                           quat="1 0 -2.5 0" rgba="0.381493 0.492734 0.780446 1"/>
                         <geom class="sphere_collision" pos="0.003  -0.0004 0.078"/>
                         <geom class="sphere_collision" pos="-0.003 -0.0004 0.078"/>
@@ -446,9 +446,9 @@
                           rgba="0.381493 0.492734 0.780446 1"/>
                         <geom class="collision" size="0.003 0.022" pos="-0.005 -0.014 0.04" quat="1 -0.2 0 0"
                           rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" type="box" size="0.006 0.002 0.04" pos="0 -0.0024 0.046" quat="1 0 0 0"
+                        <geom class="collision" type="box" size="0.006 0.002 0.04" friction="3.0 0.1 0.01" priority="2" solref="0.004 1" solimp="0.998 0.998 0.001" pos="0 -0.0024 0.046" quat="1 0 0 0"
                           rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" type="box" size="0.006 0.002 0.039" pos="0.027 -0.0024 0.053"
+                        <geom class="collision" type="box" size="0.006 0.002 0.039" friction="3.0 0.1 0.01" priority="2" solref="0.004 1" solimp="0.998 0.998 0.001" pos="0.027 -0.0024 0.053"
                           quat="1 0 2.5 0" rgba="0.381493 0.492734 0.780446 1"/>
                         <geom class="sphere_collision" pos="0.003  -0.0004 0.078"/>
                         <geom class="sphere_collision" pos="-0.003 -0.0004 0.078"/>
@@ -477,9 +477,9 @@
                           rgba="0.381493 0.492734 0.780446 1"/>
                         <geom class="collision" size="0.003 0.022" pos="-0.005 -0.014 0.04" quat="1 -0.2 0 0"
                           rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" type="box" size="0.006 0.002 0.04" pos="0 -0.0024 0.046" quat="1 0 0 0"
+                        <geom class="collision" type="box" size="0.006 0.002 0.04" friction="3.0 0.1 0.01" priority="2" solref="0.004 1" solimp="0.998 0.998 0.001" pos="0 -0.0024 0.046" quat="1 0 0 0"
                           rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" type="box" size="0.006 0.002 0.039" pos="-0.027 -0.0024 0.053"
+                        <geom class="collision" type="box" size="0.006 0.002 0.039" friction="3.0 0.1 0.01" priority="2" solref="0.004 1" solimp="0.998 0.998 0.001" pos="-0.027 -0.0024 0.053"
                           quat="1 0 -2.5 0" rgba="0.381493 0.492734 0.780446 1"/>
                         <geom class="sphere_collision" pos="0.003  -0.0004 0.078"/>
                         <geom class="sphere_collision" pos="-0.003 -0.0004 0.078"/>

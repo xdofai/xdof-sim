@@ -3387,7 +3387,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'policy'", specifier = ">=2.0" },
     { name = "trimesh", marker = "extra == 'viser'", specifier = ">=4.0" },
     { name = "viser", marker = "extra == 'viser'", specifier = ">=0.2.0" },
-    { name = "vuer", extras = ["all"], specifier = "==0.0.53" },
+    { name = "vuer", extras = ["all"], specifier = ">=0.0.53" },
     { name = "wandb", marker = "extra == 'policy'" },
     { name = "xdof-sim", extras = ["policy", "teleop", "gello", "video", "viser", "ik"], marker = "extra == 'all'" },
     { name = "xdof-sim", extras = ["viser"], marker = "extra == 'ik'" },

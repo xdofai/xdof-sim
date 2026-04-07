@@ -16,19 +16,22 @@ from xdof_sim.config import RobotSystemConfig
 # Path to scene XMLs (override with MUJOCO_SCENE_XML env var)
 _MODELS_DIR = Path(__file__).parent / "models"
 _SCENE_XMLS = {
-    "bottles": _MODELS_DIR / "yam_bimanual_scene.xml",
+    "bottles": _MODELS_DIR / "yam_bottles_scene.xml",
     "marker": _MODELS_DIR / "yam_marker_scene.xml",
     "ball_sorting": _MODELS_DIR / "yam_ball_sorting_scene.xml",
     "empty": _MODELS_DIR / "yam_bimanual_empty.xml",
     "dishrack": _MODELS_DIR / "yam_dishwasher_scene.xml",
     "chess": _MODELS_DIR / "yam_chess_scene.xml",
+    "chess_flexible": _MODELS_DIR / "yam_flexible_chess_scene.xml",
     "chess2": _MODELS_DIR / "yam_chess2_scene.xml",
     "blocks": _MODELS_DIR / "yam_blocks_scene.xml",
     "mug_tree": _MODELS_DIR / "yam_mug_tree_scene.xml",
     "mug_flip": _MODELS_DIR / "yam_mug_flip_scene.xml",
     "pour": _MODELS_DIR / "yam_pour_screw_scene.xml",
-    "spelling": _MODELS_DIR / "yam_block_spelling_scene.xml",
-    "drawer": _MODELS_DIR / "yam_drawer.xml"
+    "drawer": _MODELS_DIR / "yam_drawer_scene.xml",
+    "jenga": _MODELS_DIR / "yam_jenga_scene.xml",
+    "building_blocks": _MODELS_DIR / "yam_building_blocks_scene.xml",
+    "sweep": _MODELS_DIR / "yam_sweep_scene.xml",
 }
 _DEFAULT_SCENE_XML = Path(
     os.environ.get("MUJOCO_SCENE_XML", str(_SCENE_XMLS["bottles"]))
