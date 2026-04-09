@@ -1,5 +1,6 @@
-<mujoco model="yam_blocks">
-  <compiler angle="radian" meshdir="assets" texturedir="assets"/>
+<mujoco model="yam_inhand_transfer">
+  <compiler angle="radian" boundmass="0.001" boundinertia="0.001"/>
+
   <option integrator="implicitfast"/>
 
   <visual>
@@ -25,28 +26,26 @@
         <geom type="mesh" contype="0" conaffinity="0" density="0" group="2" material="black"/>
       </default>
       <default class="collision">
-        <geom group="3" type="capsule" friction="2.0 0.1 0.01" condim="6"/>
+        <geom group="3" type="capsule" friction="2.0 0.1 0.01" condim="6" solimp="0.998 0.998 0.001" solref="0.004 1"/>
         <default class="sphere_collision">
-          <geom size="0.0006 0 0" type="sphere" rgba="1 0 0 1" friction="4.0 0.1 0.01" condim="6" solimp="0.998 0.998 0.001" solref="0.004 1" priority="2"/>
+          <geom size="0.0006 0 0" type="sphere" rgba="1 0 0 1" friction="4.0 0.1 0.01" condim="6" solimp="0.998 0.998 0.001" solref="0.004 1"/>
         </default>
       </default>
       <default class="finger">
         <joint type="slide" armature="0.1" frictionloss="0.1"/>
-        <position ctrlrange="0.0 0.0495" kp="400" kv="14" inheritrange="0"/>
+        <position ctrlrange="0.0 0.0495" kp="200" kv="14" inheritrange="0"/>
       </default>
     </default>
-    <default class="block">
-      <geom type="mesh" contype="0" conaffinity="0" density="0" group="2"/>
+    <default class="cp2">
+      <geom type="mesh" condim="6" friction="3.0 0.1 0.01" density="0" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1"/>
     </default>
   </default>
 
   <asset>
     <material name="black" rgba="0.30 0.30 0.30 1"/>
     <material name="white" rgba="0.9 0.9 0.9 1"/>
-    <texture name="block_tex" type="2d" file="blocks/texture.png"/>
-    <material name="block_mat" texture="block_tex" specular="0.3" shininess="0.3"/>
 
-    <!-- Yam arm meshes -->
+    <!-- YAM robot meshes -->
     <mesh file="i2rt_yam/assets/model2.stl"/>
     <mesh file="i2rt_yam/assets/model2__2.stl"/>
     <mesh file="i2rt_yam/assets/model2__3.stl"/>
@@ -67,33 +66,7 @@
     <mesh name="base_visual_gate" file="i2rt_yam/assets/base_visual_gate.stl"/>
     <mesh name="camera_d405" file="i2rt_yam/assets/d405.stl"/>
 
-    <!-- Block meshes -->
-    <mesh name="block_H" file="blocks/block_H.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_E" file="blocks/block_E.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_L" file="blocks/block_L.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_O" file="blocks/block_O.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_A" file="blocks/block_A.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_B" file="blocks/block_B.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_C" file="blocks/block_C.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_D" file="blocks/block_D.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_F" file="blocks/block_F.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_G" file="blocks/block_G.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_I" file="blocks/block_I.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_J" file="blocks/block_J.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_K" file="blocks/block_K.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_M" file="blocks/block_M.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_N" file="blocks/block_N.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_P" file="blocks/block_P.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_Q" file="blocks/block_Q.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_R" file="blocks/block_R.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_S" file="blocks/block_S.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_T" file="blocks/block_T.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_U" file="blocks/block_U.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_V" file="blocks/block_V.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_W" file="blocks/block_W.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_X" file="blocks/block_X.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_Y" file="blocks/block_Y.obj" scale="0.15 0.15 0.15"/>
-    <mesh name="block_Z" file="blocks/block_Z.obj" scale="0.15 0.15 0.15"/>
+    <!-- TASK_ASSETS_PLACEHOLDER -->
 
     <texture type="skybox" builtin="gradient" rgb1="1.0 1.0 1.0" rgb2="0.98 0.98 0.98" width="512" height="3072"/>
     <texture type="2d" name="groundplane" builtin="checker" mark="edge"
@@ -102,19 +75,26 @@
   </asset>
 
   <worldbody>
-    <light pos="0 0 1.5" dir="0 0 -1" directional="true" diffuse="0.30 0.30 0.30" specular="0.05 0.05 0.05"/>
+    <!-- Lighting -->
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"
+      diffuse="0.30 0.30 0.30" specular="0.05 0.05 0.05"/>
+
+    <!-- Floor -->
     <geom name="floor" size="0 0 0.05" type="plane" rgba="0.75 0.75 0.75 1"/>
 
+    <!-- Gate/station structure (visual) -->
     <geom type="mesh" contype="0" conaffinity="0" group="2" density="0" rgba="0.60 0.62 0.68 1" mesh="base_visual_gate"/>
     <geom size="0.2975 0.65 0.375" pos="0 0 0.375" type="box" group="3" rgba="1 0 0 0.0"/>
 
+    <!-- Gate collision bodies + top camera -->
     <body name="gate_collision" pos="0 0 0.75">
       <geom size="0.015 0.015 0.45" pos="0 0.575 0.45" type="box" group="3" rgba="1 0 0 0.0"/>
       <geom size="0.015 0.015 0.45" pos="0 -0.575 0.45" type="box" group="3" rgba="1 0 0 0.0"/>
       <geom size="0.015 0.015 0.59" pos="0 0 0.915" quat="0.707107 0.707107 0 0" type="box" group="3" rgba="1 0 0 0.0"/>
       <body name="top_bar_center" pos="0 0 0.915">
         <body name="top_camera_d405" pos="0.08600512 -0.009 0.03932053" quat="0.183012 0.683013 0.683013 0.183012">
-          <geom type="mesh" contype="0" conaffinity="0" group="2" density="0.001" mass="0.001" rgba="0 0 0 0" mesh="camera_d405"/>
+          <geom type="mesh" contype="0" conaffinity="0" group="2" density="0.001" mass="0.001"
+            rgba="0 0 0 0" mesh="camera_d405"/>
           <body name="top_camera_frame" pos="0.009 0 0" quat="0 0 0 1">
             <camera name="top" pos="0 0 0" quat="0 1 0 0" fovy="58"/>
           </body>
@@ -122,173 +102,27 @@
       </body>
     </body>
 
-    <geom name="back_wall" type="box" size="0.005 0.65 1.0" pos="0.9 0 1.0" group="2"  rgba="0.88 0.88 0.88 1"/>
-    <geom name="left_wall" type="box" size="0.45 0.005 1.0" pos="0.45 0.65 1.0" group="2"  rgba="0.88 0.88 0.88 1"/>
-    <geom name="right_wall" type="box" size="0.45 0.005 1.0" pos="0.45 -0.65 1.0" group="2"  rgba="0.88 0.88 0.88 1"/>
+    <!-- Enclosure walls (visual-only, matching real white-walled workspace) -->
+    <geom name="back_wall" type="box" size="0.005 0.65 1.0"
+      pos="0.9 0 1.0" group="2"
+      rgba="0.88 0.88 0.88 1"/>
+    <geom name="left_wall" type="box" size="0.45 0.005 1.0"
+      pos="0.45 0.65 1.0" group="2"
+      rgba="0.88 0.88 0.88 1"/>
+    <geom name="right_wall" type="box" size="0.45 0.005 1.0"
+      pos="0.45 -0.65 1.0" group="2"
+      rgba="0.88 0.88 0.88 1"/>
 
-    
-    <!-- Side cameras on cage walls -->
-    
-    <!-- Overhead camera -->
-    <body name="overhead_camera" pos="0.55 0.0 1.6">
-      <camera name="overhead" pos="0 0 0" quat="0.707 0 0 -0.707" fovy="60"/>
-    </body>
-
-    <body name="left_side_camera" pos="0.5 0.55 1.05" euler="-1.3 0 3.14159">
-      <camera name="left_side" pos="0 0 0" fovy="70"/>
-    </body>
-    <body name="right_side_camera" pos="0.5 -0.55 1.05" euler="1.3 0 0">
-      <camera name="right_side" pos="0 0 0" fovy="70"/>
-    </body>
-
+    <!-- Play table -->
     <body name="play_table">
       <geom size="0.2975 0.65 0.005" pos="0.6 0 0.745" type="box" group="2" contype="0" conaffinity="0" rgba="0.92 0.92 0.92 1"/>
     </body>
     <geom name="table_plane" type="plane" size="0.2975 0.65 0.01" pos="0.6 0 0.75" rgba="0 0 0 0" group="3"/>
 
-
-
-
-
-    <!-- ==================== LETTER BLOCKS ==================== -->
-    <!-- 4 rows, 55 mm Y spacing, 60 mm X spacing between rows -->
-    <!-- Row 1 (x=0.600): A-G -->
-    <body name="block_A" pos="0.600 -0.165 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_A_jnt"/>
-      <geom name="block_A_vis" type="mesh" mesh="block_A" material="block_mat" class="block"/>
-      <geom name="block_A_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_B" pos="0.600 -0.110 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_B_jnt"/>
-      <geom name="block_B_vis" type="mesh" mesh="block_B" material="block_mat" class="block"/>
-      <geom name="block_B_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_C" pos="0.600 -0.055 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_C_jnt"/>
-      <geom name="block_C_vis" type="mesh" mesh="block_C" material="block_mat" class="block"/>
-      <geom name="block_C_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_D" pos="0.600  0.000 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_D_jnt"/>
-      <geom name="block_D_vis" type="mesh" mesh="block_D" material="block_mat" class="block"/>
-      <geom name="block_D_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_E" pos="0.600  0.055 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_E_jnt"/>
-      <geom name="block_E_vis" type="mesh" mesh="block_E" material="block_mat" class="block"/>
-      <geom name="block_E_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_F" pos="0.600  0.110 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_F_jnt"/>
-      <geom name="block_F_vis" type="mesh" mesh="block_F" material="block_mat" class="block"/>
-      <geom name="block_F_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_G" pos="0.600  0.165 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_G_jnt"/>
-      <geom name="block_G_vis" type="mesh" mesh="block_G" material="block_mat" class="block"/>
-      <geom name="block_G_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <!-- Row 2 (x=0.660): H-N -->
-    <body name="block_H" pos="0.660 -0.165 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_H_jnt"/>
-      <geom name="block_H_vis" type="mesh" mesh="block_H" material="block_mat" class="block"/>
-      <geom name="block_H_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_I" pos="0.660 -0.110 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_I_jnt"/>
-      <geom name="block_I_vis" type="mesh" mesh="block_I" material="block_mat" class="block"/>
-      <geom name="block_I_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_J" pos="0.660 -0.055 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_J_jnt"/>
-      <geom name="block_J_vis" type="mesh" mesh="block_J" material="block_mat" class="block"/>
-      <geom name="block_J_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_K" pos="0.660  0.000 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_K_jnt"/>
-      <geom name="block_K_vis" type="mesh" mesh="block_K" material="block_mat" class="block"/>
-      <geom name="block_K_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_L" pos="0.660  0.055 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_L_jnt"/>
-      <geom name="block_L_vis" type="mesh" mesh="block_L" material="block_mat" class="block"/>
-      <geom name="block_L_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_M" pos="0.660  0.110 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_M_jnt"/>
-      <geom name="block_M_vis" type="mesh" mesh="block_M" material="block_mat" class="block"/>
-      <geom name="block_M_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_N" pos="0.660  0.165 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_N_jnt"/>
-      <geom name="block_N_vis" type="mesh" mesh="block_N" material="block_mat" class="block"/>
-      <geom name="block_N_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <!-- Row 3 (x=0.720): O-U -->
-    <body name="block_O" pos="0.720 -0.165 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_O_jnt"/>
-      <geom name="block_O_vis" type="mesh" mesh="block_O" material="block_mat" class="block"/>
-      <geom name="block_O_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_P" pos="0.720 -0.110 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_P_jnt"/>
-      <geom name="block_P_vis" type="mesh" mesh="block_P" material="block_mat" class="block"/>
-      <geom name="block_P_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_Q" pos="0.720 -0.055 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_Q_jnt"/>
-      <geom name="block_Q_vis" type="mesh" mesh="block_Q" material="block_mat" class="block"/>
-      <geom name="block_Q_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_R" pos="0.720  0.000 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_R_jnt"/>
-      <geom name="block_R_vis" type="mesh" mesh="block_R" material="block_mat" class="block"/>
-      <geom name="block_R_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_S" pos="0.720  0.055 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_S_jnt"/>
-      <geom name="block_S_vis" type="mesh" mesh="block_S" material="block_mat" class="block"/>
-      <geom name="block_S_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_T" pos="0.720  0.110 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_T_jnt"/>
-      <geom name="block_T_vis" type="mesh" mesh="block_T" material="block_mat" class="block"/>
-      <geom name="block_T_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_U" pos="0.720  0.165 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_U_jnt"/>
-      <geom name="block_U_vis" type="mesh" mesh="block_U" material="block_mat" class="block"/>
-      <geom name="block_U_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <!-- Row 4 (x=0.780): V-Z (5 blocks, centred on y=0) -->
-    <body name="block_V" pos="0.780 -0.110 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_V_jnt"/>
-      <geom name="block_V_vis" type="mesh" mesh="block_V" material="block_mat" class="block"/>
-      <geom name="block_V_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_W" pos="0.780 -0.055 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_W_jnt"/>
-      <geom name="block_W_vis" type="mesh" mesh="block_W" material="block_mat" class="block"/>
-      <geom name="block_W_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_X" pos="0.780  0.000 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_X_jnt"/>
-      <geom name="block_X_vis" type="mesh" mesh="block_X" material="block_mat" class="block"/>
-      <geom name="block_X_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_Y" pos="0.780  0.055 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_Y_jnt"/>
-      <geom name="block_Y_vis" type="mesh" mesh="block_Y" material="block_mat" class="block"/>
-      <geom name="block_Y_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
-    <body name="block_Z" pos="0.780  0.110 0.767" quat="0.707 0 0.707 0">
-      <freejoint name="block_Z_jnt"/>
-      <geom name="block_Z_vis" type="mesh" mesh="block_Z" material="block_mat" class="block"/>
-      <geom name="block_Z_col" type="box" size="0.015 0.015 0.015" condim="6" friction="3.0 0.03 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" mass="0.005" group="3" rgba="0 0 0 0"/>
-    </body>
+    <!-- TASK_BODY_PLACEHOLDER -->
 
     <!-- ==================== LEFT ARM ==================== -->
-    <body name="left_arm" pos="0.2525 0.31 0.76" childclass="yam">
+    <body name="left_arm" pos="0.2525 0.31 0.75" childclass="yam">
       <geom class="visual" pos="0 0 -0.0006" quat="1 0 0 1" mesh="model2"/>
       <geom class="collision" size="0.033 0.01" pos="0.0 0.0 0.026" quat="1 0 0 0"/>
       <body name="left_link_1" pos="0 0 0.0631" quat="1 0 0 1">
@@ -339,7 +173,7 @@
                   <geom class="collision" size="0.01 0.035" pos="0 -0.039 0.052" quat="1 0 1 0"/>
                   <site name="left_tcp_site" pos="0 0 0" quat="1 0 0 -1" size="0.005" rgba="1 0 0 1" group="4"/>
                   <site name="left_grasp_site" pos="0 0 0.1347" quat="1 0 0 -1" size="0.005" rgba="0 1 0 1" group="4"/>
-                  <body name="left_camera_d405" pos="-0.0107 0.095 0.062" quat="0.906 0.423 0 0">
+                  <body name="left_camera_d405" pos="-0.0107 0.079729 0.066021" quat="0.906 0.423 0 0">
                     <geom type="mesh" contype="0" conaffinity="0" group="3" density="0.001" mass="0.001"
                       rgba="0 0 0 0" mesh="camera_d405"/>
                     <geom name="left_cam_col" type="sphere" size="0.02" pos="0 0 0"
@@ -355,14 +189,21 @@
                     <geom class="visual" pos="0.171097 -0.203301 0.037" quat="1 -1 -1 -1" mesh="model2__14"/>
                     <geom class="visual" pos="0.171097 -0.203301 0.037" quat="1 -1 -1 -1" mesh="model2__15"/>
                     <body name="left_lf_rot" quat="1 -1 -1 1" pos="0.0 -0.0392 0.037" gravcomp="1">
-                      <geom class="collision" size="0.01 0.03" pos="0.0 -0.02 0.012" quat="1 0 1 0" rgba="0.381493 0.492734 0.780446 1"/>
-                      <geom class="collision" size="0.01 0.02" pos="-0.02 -0.01 0.032" quat="1 0 2.5 0" rgba="0.381493 0.492734 0.780446 1"/>
+                      <geom class="collision" size="0.01 0.03" pos="0.0 -0.02 0.012" quat="1 0 1 0"
+                        rgba="0.381493 0.492734 0.780446 1"/>
+                      <geom class="collision" size="0.01 0.02" pos="-0.02 -0.01 0.032" quat="1 0 2.5 0"
+                        rgba="0.381493 0.492734 0.780446 1"/>
                       <body name="left_lf_down" quat="1 0 0 0" pos="-0.044 0.0 0.0" gravcomp="1">
-                        <geom class="collision" size="0.01 0.01" pos="0.0 -0.020 0.012" quat="1 -0.1 0 0" rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" size="0.003 0.022" pos="0.005 -0.014 0.04" quat="1 -0.2 0 0" rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" size="0.003 0.022" pos="-0.005 -0.014 0.04" quat="1 -0.2 0 0" rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" type="box" size="0.006 0.002 0.04" friction="3.0 0.1 0.01" priority="2" solref="0.004 1" solimp="0.998 0.998 0.001" pos="0 -0.0024 0.046" quat="1 0 0 0" rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" type="box" size="0.006 0.002 0.039" friction="3.0 0.1 0.01" priority="2" solref="0.004 1" solimp="0.998 0.998 0.001" pos="0.027 -0.0024 0.053" quat="1 0 2.5 0" rgba="0.381493 0.492734 0.780446 1"/>
+                        <geom class="collision" size="0.01 0.01" pos="0.0 -0.020 0.012" quat="1 -0.1 0 0"
+                          rgba="0.381493 0.492734 0.780446 1"/>
+                        <geom class="collision" size="0.003 0.022" pos="0.005 -0.014 0.04" quat="1 -0.2 0 0"
+                          rgba="0.381493 0.492734 0.780446 1"/>
+                        <geom class="collision" size="0.003 0.022" pos="-0.005 -0.014 0.04" quat="1 -0.2 0 0"
+                          rgba="0.381493 0.492734 0.780446 1"/>
+                        <geom class="collision" type="box" size="0.006 0.002 0.04" pos="0 -0.0024 0.046" quat="1 0 0 0"
+                          rgba="0.381493 0.492734 0.780446 1"/>
+                        <geom class="collision" type="box" size="0.006 0.002 0.039" pos="0.027 -0.0024 0.053"
+                          quat="1 0 2.5 0" rgba="0.381493 0.492734 0.780446 1"/>
                         <geom class="sphere_collision" pos="0.003  -0.0004 0.078"/>
                         <geom class="sphere_collision" pos="-0.003 -0.0004 0.078"/>
                         <geom class="sphere_collision" pos="0.003  -0.0004 0.07"/>
@@ -379,14 +220,21 @@
                     <geom class="visual" pos="0.171097 -0.124901 -0.037" quat="1 -1 -1 -1" mesh="model2__16"/>
                     <geom class="visual" pos="0.171097 -0.124901 -0.037" quat="1 -1 -1 -1" mesh="model2__17"/>
                     <body name="left_rf_rot" quat="1 1 -1 -1" pos="0.0 0.0392 -0.037" gravcomp="1">
-                      <geom class="collision" size="0.01 0.03" pos="0.0 -0.02 0.012" quat="1 0 1 0" rgba="0.381493 0.492734 0.780446 1"/>
-                      <geom class="collision" size="0.01 0.02" pos="0.02 -0.01 0.032" quat="1 0 -2.5 0" rgba="0.381493 0.492734 0.780446 1"/>
+                      <geom class="collision" size="0.01 0.03" pos="0.0 -0.02 0.012" quat="1 0 1 0"
+                        rgba="0.381493 0.492734 0.780446 1"/>
+                      <geom class="collision" size="0.01 0.02" pos="0.02 -0.01 0.032" quat="1 0 -2.5 0"
+                        rgba="0.381493 0.492734 0.780446 1"/>
                       <body name="left_rf_down" quat="1 0 0 0" pos="0.044 0.0 0.0" gravcomp="1">
-                        <geom class="collision" size="0.01 0.01" pos="0.0 -0.020 0.012" quat="1 -0.1 0 0" rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" size="0.003 0.022" pos="0.005 -0.014 0.04" quat="1 -0.2 0 0" rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" size="0.003 0.022" pos="-0.005 -0.014 0.04" quat="1 -0.2 0 0" rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" type="box" size="0.006 0.002 0.04" friction="3.0 0.1 0.01" priority="2" solref="0.004 1" solimp="0.998 0.998 0.001" pos="0 -0.0024 0.046" quat="1 0 0 0" rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" type="box" size="0.006 0.002 0.039" friction="3.0 0.1 0.01" priority="2" solref="0.004 1" solimp="0.998 0.998 0.001" pos="-0.027 -0.0024 0.053" quat="1 0 -2.5 0" rgba="0.381493 0.492734 0.780446 1"/>
+                        <geom class="collision" size="0.01 0.01" pos="0.0 -0.020 0.012" quat="1 -0.1 0 0"
+                          rgba="0.381493 0.492734 0.780446 1"/>
+                        <geom class="collision" size="0.003 0.022" pos="0.005 -0.014 0.04" quat="1 -0.2 0 0"
+                          rgba="0.381493 0.492734 0.780446 1"/>
+                        <geom class="collision" size="0.003 0.022" pos="-0.005 -0.014 0.04" quat="1 -0.2 0 0"
+                          rgba="0.381493 0.492734 0.780446 1"/>
+                        <geom class="collision" type="box" size="0.006 0.002 0.04" pos="0 -0.0024 0.046" quat="1 0 0 0"
+                          rgba="0.381493 0.492734 0.780446 1"/>
+                        <geom class="collision" type="box" size="0.006 0.002 0.039" pos="-0.027 -0.0024 0.053"
+                          quat="1 0 -2.5 0" rgba="0.381493 0.492734 0.780446 1"/>
                         <geom class="sphere_collision" pos="0.003  -0.0004 0.078"/>
                         <geom class="sphere_collision" pos="-0.003 -0.0004 0.078"/>
                         <geom class="sphere_collision" pos="0.003  -0.0004 0.07"/>
@@ -405,7 +253,7 @@
     </body>
 
     <!-- ==================== RIGHT ARM ==================== -->
-    <body name="right_arm" pos="0.2525 -0.31 0.76" childclass="yam">
+    <body name="right_arm" pos="0.2525 -0.31 0.75" childclass="yam">
       <geom class="visual" pos="0 0 -0.0006" quat="1 0 0 1" mesh="model2"/>
       <geom class="collision" size="0.033 0.01" pos="0.0 0.0 0.026" quat="1 0 0 0"/>
       <body name="right_link_1" pos="0 0 0.0631" quat="1 0 0 1">
@@ -456,7 +304,7 @@
                   <geom class="collision" size="0.01 0.035" pos="0 -0.039 0.052" quat="1 0 1 0"/>
                   <site name="right_tcp_site" pos="0 0 0" quat="1 0 0 -1" size="0.005" rgba="1 0 0 1" group="4"/>
                   <site name="right_grasp_site" pos="0 0 0.1347" quat="1 0 0 -1" size="0.005" rgba="0 1 0 1" group="4"/>
-                  <body name="right_camera_d405" pos="-0.0107 0.095 0.062" quat="0.906 0.423 0 0">
+                  <body name="right_camera_d405" pos="-0.0107 0.079729 0.066021" quat="0.906 0.423 0 0">
                     <geom type="mesh" contype="0" conaffinity="0" group="3" density="0.001" mass="0.001"
                       rgba="0 0 0 0" mesh="camera_d405"/>
                     <geom name="right_cam_col" type="sphere" size="0.02" pos="0 0 0"
@@ -472,14 +320,21 @@
                     <geom class="visual" pos="0.171097 -0.203301 0.037" quat="1 -1 -1 -1" mesh="model2__14"/>
                     <geom class="visual" pos="0.171097 -0.203301 0.037" quat="1 -1 -1 -1" mesh="model2__15"/>
                     <body name="right_lf_rot" quat="1 -1 -1 1" pos="0.0 -0.0392 0.037" gravcomp="1">
-                      <geom class="collision" size="0.01 0.03" pos="0.0 -0.02 0.012" quat="1 0 1 0" rgba="0.381493 0.492734 0.780446 1"/>
-                      <geom class="collision" size="0.01 0.02" pos="-0.02 -0.01 0.032" quat="1 0 2.5 0" rgba="0.381493 0.492734 0.780446 1"/>
+                      <geom class="collision" size="0.01 0.03" pos="0.0 -0.02 0.012" quat="1 0 1 0"
+                        rgba="0.381493 0.492734 0.780446 1"/>
+                      <geom class="collision" size="0.01 0.02" pos="-0.02 -0.01 0.032" quat="1 0 2.5 0"
+                        rgba="0.381493 0.492734 0.780446 1"/>
                       <body name="right_lf_down" quat="1 0 0 0" pos="-0.044 0.0 0.0" gravcomp="1">
-                        <geom class="collision" size="0.01 0.01" pos="0.0 -0.020 0.012" quat="1 -0.1 0 0" rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" size="0.003 0.022" pos="0.005 -0.014 0.04" quat="1 -0.2 0 0" rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" size="0.003 0.022" pos="-0.005 -0.014 0.04" quat="1 -0.2 0 0" rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" type="box" size="0.006 0.002 0.04" friction="3.0 0.1 0.01" priority="2" solref="0.004 1" solimp="0.998 0.998 0.001" pos="0 -0.0024 0.046" quat="1 0 0 0" rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" type="box" size="0.006 0.002 0.039" friction="3.0 0.1 0.01" priority="2" solref="0.004 1" solimp="0.998 0.998 0.001" pos="0.027 -0.0024 0.053" quat="1 0 2.5 0" rgba="0.381493 0.492734 0.780446 1"/>
+                        <geom class="collision" size="0.01 0.01" pos="0.0 -0.020 0.012" quat="1 -0.1 0 0"
+                          rgba="0.381493 0.492734 0.780446 1"/>
+                        <geom class="collision" size="0.003 0.022" pos="0.005 -0.014 0.04" quat="1 -0.2 0 0"
+                          rgba="0.381493 0.492734 0.780446 1"/>
+                        <geom class="collision" size="0.003 0.022" pos="-0.005 -0.014 0.04" quat="1 -0.2 0 0"
+                          rgba="0.381493 0.492734 0.780446 1"/>
+                        <geom class="collision" type="box" size="0.006 0.002 0.04" pos="0 -0.0024 0.046" quat="1 0 0 0"
+                          rgba="0.381493 0.492734 0.780446 1"/>
+                        <geom class="collision" type="box" size="0.006 0.002 0.039" pos="0.027 -0.0024 0.053"
+                          quat="1 0 2.5 0" rgba="0.381493 0.492734 0.780446 1"/>
                         <geom class="sphere_collision" pos="0.003  -0.0004 0.078"/>
                         <geom class="sphere_collision" pos="-0.003 -0.0004 0.078"/>
                         <geom class="sphere_collision" pos="0.003  -0.0004 0.07"/>
@@ -496,14 +351,21 @@
                     <geom class="visual" pos="0.171097 -0.124901 -0.037" quat="1 -1 -1 -1" mesh="model2__16"/>
                     <geom class="visual" pos="0.171097 -0.124901 -0.037" quat="1 -1 -1 -1" mesh="model2__17"/>
                     <body name="right_rf_rot" quat="1 1 -1 -1" pos="0.0 0.0392 -0.037" gravcomp="1">
-                      <geom class="collision" size="0.01 0.03" pos="0.0 -0.02 0.012" quat="1 0 1 0" rgba="0.381493 0.492734 0.780446 1"/>
-                      <geom class="collision" size="0.01 0.02" pos="0.02 -0.01 0.032" quat="1 0 -2.5 0" rgba="0.381493 0.492734 0.780446 1"/>
+                      <geom class="collision" size="0.01 0.03" pos="0.0 -0.02 0.012" quat="1 0 1 0"
+                        rgba="0.381493 0.492734 0.780446 1"/>
+                      <geom class="collision" size="0.01 0.02" pos="0.02 -0.01 0.032" quat="1 0 -2.5 0"
+                        rgba="0.381493 0.492734 0.780446 1"/>
                       <body name="right_rf_down" quat="1 0 0 0" pos="0.044 0.0 0.0" gravcomp="1">
-                        <geom class="collision" size="0.01 0.01" pos="0.0 -0.020 0.012" quat="1 -0.1 0 0" rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" size="0.003 0.022" pos="0.005 -0.014 0.04" quat="1 -0.2 0 0" rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" size="0.003 0.022" pos="-0.005 -0.014 0.04" quat="1 -0.2 0 0" rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" type="box" size="0.006 0.002 0.04" friction="3.0 0.1 0.01" priority="2" solref="0.004 1" solimp="0.998 0.998 0.001" pos="0 -0.0024 0.046" quat="1 0 0 0" rgba="0.381493 0.492734 0.780446 1"/>
-                        <geom class="collision" type="box" size="0.006 0.002 0.039" friction="3.0 0.1 0.01" priority="2" solref="0.004 1" solimp="0.998 0.998 0.001" pos="-0.027 -0.0024 0.053" quat="1 0 -2.5 0" rgba="0.381493 0.492734 0.780446 1"/>
+                        <geom class="collision" size="0.01 0.01" pos="0.0 -0.020 0.012" quat="1 -0.1 0 0"
+                          rgba="0.381493 0.492734 0.780446 1"/>
+                        <geom class="collision" size="0.003 0.022" pos="0.005 -0.014 0.04" quat="1 -0.2 0 0"
+                          rgba="0.381493 0.492734 0.780446 1"/>
+                        <geom class="collision" size="0.003 0.022" pos="-0.005 -0.014 0.04" quat="1 -0.2 0 0"
+                          rgba="0.381493 0.492734 0.780446 1"/>
+                        <geom class="collision" type="box" size="0.006 0.002 0.04" pos="0 -0.0024 0.046" quat="1 0 0 0"
+                          rgba="0.381493 0.492734 0.780446 1"/>
+                        <geom class="collision" type="box" size="0.006 0.002 0.039" pos="-0.027 -0.0024 0.053"
+                          quat="1 0 -2.5 0" rgba="0.381493 0.492734 0.780446 1"/>
                         <geom class="sphere_collision" pos="0.003  -0.0004 0.078"/>
                         <geom class="sphere_collision" pos="-0.003 -0.0004 0.078"/>
                         <geom class="sphere_collision" pos="0.003  -0.0004 0.07"/>
@@ -520,15 +382,17 @@
         </body>
       </body>
     </body>
-
   </worldbody>
 
+  <!-- Equality constraints: mirror left/right finger per arm -->
   <equality>
     <joint joint1="left_left_finger" joint2="left_right_finger" polycoef="0 -1 0 0 0"/>
     <joint joint1="right_left_finger" joint2="right_right_finger" polycoef="0 -1 0 0 0"/>
   </equality>
 
+  <!-- Actuators: 14 total (7 per arm) -->
   <actuator>
+    <!-- Left arm -->
     <position name="left_joint1" joint="left_joint1" class="dm4340"/>
     <position name="left_joint2" joint="left_joint2" class="dm4340"/>
     <position name="left_joint3" joint="left_joint3" class="dm4340"/>
@@ -536,6 +400,7 @@
     <position name="left_joint5" joint="left_joint5" class="dm4310"/>
     <position name="left_joint6" joint="left_joint6" class="dm4310"/>
     <position class="finger" name="left_gripper" joint="left_left_finger"/>
+    <!-- Right arm -->
     <position name="right_joint1" joint="right_joint1" class="dm4340"/>
     <position name="right_joint2" joint="right_joint2" class="dm4340"/>
     <position name="right_joint3" joint="right_joint3" class="dm4340"/>
@@ -545,10 +410,4 @@
     <position class="finger" name="right_gripper" joint="right_left_finger"/>
   </actuator>
 
-  <keyframe>
-    <key name="home"
-      qpos="0.6008 -0.1378 0.767 0.707 0 0.707 0 0.5987 -0.0917 0.767 0.707 0 0.707 0 0.6014 -0.0439 0.767 0.707 0 0.707 0 0.6024 -0.0025 0.767 0.707 0 0.707 0 0.5995 0.0422 0.767 0.707 0 0.707 0 0.5983 0.0900 0.767 0.707 0 0.707 0 0.5972 0.1332 0.767 0.707 0 0.707 0 0.6559 -0.1347 0.767 0.707 0 0.707 0 0.6533 -0.0895 0.767 0.707 0 0.707 0 0.6569 -0.0480 0.767 0.707 0 0.707 0 0.6568 0.0012 0.767 0.707 0 0.707 0 0.6540 0.0429 0.767 0.707 0 0.707 0 0.6577 0.0890 0.767 0.707 0 0.707 0 0.6526 0.1326 0.767 0.707 0 0.707 0 0.7121 -0.1344 0.767 0.707 0 0.707 0 0.7118 -0.0886 0.767 0.707 0 0.707 0 0.7102 -0.0422 0.767 0.707 0 0.707 0 0.7093 0.0003 0.767 0.707 0 0.707 0 0.7120 0.0457 0.767 0.707 0 0.707 0 0.7122 0.0905 0.767 0.707 0 0.707 0 0.7112 0.1323 0.767 0.707 0 0.707 0 0.7634 -0.1363 0.767 0.707 0 0.707 0 0.7625 -0.0916 0.767 0.707 0 0.707 0 0.7626 -0.0463 0.767 0.707 0 0.707 0 0.7658 -0.0008 0.767 0.707 0 0.707 0 0.7642 0.0433 0.767 0.707 0 0.707 0 
-            0 1.047 1.047 0 0 0 0 0  0 1.047 1.047 0 0 0 0 0"
-      ctrl="0 1.047 1.047 0 0 0 0  0 1.047 1.047 0 0 0 0"/>
-  </keyframe>
 </mujoco>

@@ -1,4 +1,4 @@
-v=<mujoco model="yam_bimanual">
+<mujoco model="yam_bimanual">
   <compiler angle="radian" meshdir="assets" boundmass="0.0001" boundinertia="0.000001"/>
 
   <option integrator="implicitfast" iterations="50" ls_iterations="25" cone="pyramidal" noslip_iterations="0"/>
@@ -47,10 +47,10 @@ v=<mujoco model="yam_bimanual">
   <asset>
     <material name="black" rgba="0.30 0.30 0.30 1"/>
     <material name="white" rgba="0.9 0.9 0.9 1"/>
-    <material name="mug_green" specular="0.5" shininess="0.003" rgba="0.172 0.780 0.435 1.0"/>
-    <material name="mug_1_color" specular="0.5" shininess="0.003" rgba="0.172 0.780 0.435 1.0"/>
+    <material name="mug_green" specular="0.5" shininess="0.003" rgba="0.172 0.780 0.435 0.3"/>
+    <material name="mug_1_color" specular="0.5" shininess="0.003" rgba="0.172 0.780 0.435 0.3"/>
     <material name="cup_body_color" specular="0.5" shininess="0.003" rgba="0.8 0.6 0.3 1.0"/>
-    <material name="mug_white" specular="0.5" shininess="0.003" rgba="0.930 0.930 0.930 1.0"/>
+    <material name="mug_white" specular="0.5" shininess="0.003" rgba="0.930 0.930 0.930 0.3"/>
     <material name="cup_color" specular="0.5" shininess="0.003" rgba="0.8 0.6 0.3 1.0"/>
 
 
@@ -179,7 +179,7 @@ v=<mujoco model="yam_bimanual">
     <body name="mug_1" pos="0.45 0.15 0.80">
       <freejoint name="mug_1_jnt"/>
       <geom type="mesh" mesh="mug_vis_0" material="mug_white" mass="0.04" density="0" contype="0" conaffinity="0" group="2"/>
-      <geom type="mesh" mesh="mug_vis_1" material="mug_1_color" density="0" contype="0" conaffinity="0" group="2"/>
+      <geom type="mesh" mesh="mug_vis_1" material="mug_1_color" density="0" contype="0" conaffinity="0" group="3"/>
       <geom type="mesh" mesh="mug_col_0" class="mug_col"/>
       <geom type="mesh" mesh="mug_col_1" class="mug_col"/>
       <geom type="mesh" mesh="mug_col_2" class="mug_col"/>

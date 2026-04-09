@@ -188,6 +188,29 @@ uv run python -m xdof_sim.teleop.gello_leader --name right --device /dev/ttyUSB0
 # Open in VR headset browser: http://<your-ip>:8012
 ```
 
+Useful `vr_streamer` flags:
+
+- `--clean` removes static visual clutter from the scene at launch, including the cage, walls, floor visuals, and extra cameras, while keeping physics/collision intact.
+- `--mocap` switches from GELLO-driven teleop to VR-controller-driven mocap control. Hold the controller grip to move the arm target and use the trigger to open/close the gripper. The red/green mocap debug boxes are only shown when you also pass `--debug`.
+- `--flexible-gripper` swaps the standard YAM finger assembly for the flexible gripper at launch without requiring a separate copy of every task scene.
+
+```bash
+# Clean visual scene
+uv run python -m xdof_sim.examples.vr_streamer --task chess --clean
+
+# VR-controller mocap teleop (no GELLO leaders needed)
+uv run python -m xdof_sim.examples.vr_streamer --task chess --mocap
+
+# Use the flexible gripper on any supported task scene
+uv run python -m xdof_sim.examples.vr_streamer --task blocks --flexible-gripper
+
+# Flags can be combined
+uv run python -m xdof_sim.examples.vr_streamer --task chess \
+    --clean \
+    --mocap \
+    --flexible-gripper
+```
+
 **VR viewpoint:** Use `--vr-pos` and `--vr-target` to control where you spawn in VR.
 
 `--vr-pos X Y Z` sets your position (default: `0 0 0`):

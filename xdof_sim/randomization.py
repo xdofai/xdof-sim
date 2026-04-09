@@ -446,14 +446,18 @@ class DishRackRandomizer(SceneRandomizer):
 
 
 class BlocksRandomizer(SceneRandomizer):
-    min_clearance_m = 0.04
+    """Small per-block perturbation for the 26-letter blocks scene.
+
+    Blocks are arranged in a 4-row grid with 55 mm spacing; perturbations
+    keep each block near its nominal position (±12 mm x/y, ±0.25 rad yaw).
+    """
+    min_clearance_m = 0.030
     perturbations = [
-        PerturbRange("block_H_1_jnt", delta_x=(-0.10, 0.10), delta_y=(-0.10, 0.10)),
-        PerturbRange("block_E_2_jnt", delta_x=(-0.10, 0.10), delta_y=(-0.10, 0.10)),
-        PerturbRange("block_L_3_jnt", delta_x=(-0.10, 0.10), delta_y=(-0.10, 0.10)),
-        PerturbRange("block_L_4_jnt", delta_x=(-0.10, 0.10), delta_y=(-0.10, 0.10)),
-        PerturbRange("block_O_5_jnt", delta_x=(-0.10, 0.10), delta_y=(-0.10, 0.10)),
-        PerturbRange("block_A_6_jnt", delta_x=(-0.10, 0.10), delta_y=(-0.10, 0.10)),
+        PerturbRange(f"block_{letter}_jnt",
+                     delta_x=(-0.012, 0.012),
+                     delta_y=(-0.012, 0.012),
+                     delta_yaw=(-0.25, 0.25))
+        for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     ]
 
 
@@ -654,7 +658,7 @@ class DrawerRandomizer(SceneRandomizer):
 
     min_clearance_m = 0.04
     perturbations = [
-        PerturbRange("drawer_body", delta_x=(-0.08, 0.08), delta_y=(-0.10, 0.10),
+        PerturbRange("drawer_body", delta_x=(-0.08, 0.0), delta_y=(-0.10, 0.10),
                      delta_yaw=(-0.3, 0.3), fixed_body=True),
         *[
             PerturbRange(f"marker_{i}_joint", delta_x=(-0.08, 0.08), delta_y=(-0.10, 0.10))
@@ -722,6 +726,202 @@ class ChessRandomizer(SceneRandomizer):
 
 # chess2 uses the same piece names as chess.
 Chess2Randomizer = ChessRandomizer
+
+
+# ---------------------------------------------------------------------------
+# InHand Transfer randomizer — reloads the MuJoCo model on every reset
+# ---------------------------------------------------------------------------
+
+import xml.etree.ElementTree as _ET
+from pathlib import Path as _Path
+
+_MODELS_DIR = _Path(__file__).parent / "models"
+_BASE_SCENE_XML = _MODELS_DIR / "yam_inhand_transfer_base.xml"
+_LIGHTWHEEL_BASE = _MODELS_DIR / "assets_robocasa" / "objects_lightwheel" / "lightwheel"
+_OBJAVERSE_BASE = _MODELS_DIR / "assets_robocasa" / "objaverse" / "objaverse"
+
+_OBJAVERSE_CATEGORIES = {"rolling_pin", "water_bottle", "can", "ladle"}
+# Approved object categories for the inhand_transfer task.
+# Edit this list to add/remove objects from the randomization pool.
+INHAND_OBJECT_CATEGORIES: list[str] = [
+    # lightwheel pack
+    "dish_brush", "whisk", "salt_and_pepper_shaker", "cream_cheese_stick",
+    "cheese_grater", "pizza_cutter",
+    # objaverse pack
+    "rolling_pin", "water_bottle", "can", "ladle",
+]
+_INHAND_CATEGORIES = INHAND_OBJECT_CATEGORIES  # internal alias
+_OBJ_DENSITY = 30.0
+_CATEGORY_MESH_SCALE: dict[str, str] = {"wooden_spoon": "1 1 2.5"}
+_X_MIN, _X_MAX = 0.42, 0.78
+_Y_LEFT_MIN, _Y_LEFT_MAX = 0.10, 0.40
+_Y_RIGHT_MIN, _Y_RIGHT_MAX = -0.40, -0.10
+_OBJ_Z = 0.82
+
+
+def _inhand_asset_base(category: str) -> _Path:
+    return _OBJAVERSE_BASE if category in _OBJAVERSE_CATEGORIES else _LIGHTWHEEL_BASE
+
+
+def _inhand_get_variants(category: str) -> list[_Path]:
+    cat_dir = _inhand_asset_base(category) / category
+    variants = []
+    for d in sorted(cat_dir.iterdir()):
+        if not d.is_dir():
+            continue
+        try:
+            parsed = _inhand_parse_model_xml(d)
+            if parsed["col_geoms"]:
+                variants.append(d)
+        except Exception:
+            pass
+    return variants
+
+
+def _inhand_parse_model_xml(variant_dir: _Path) -> dict:
+    root = _ET.parse(str(variant_dir / "model.xml")).getroot()
+    asset_elem = root.find("asset")
+    meshes, textures, materials = [], [], []
+    if asset_elem is not None:
+        for mesh in asset_elem.findall("mesh"):
+            extra = {k: v for k, v in mesh.attrib.items() if k not in ("name", "file")}
+            meshes.append({"name": mesh.get("name", ""), "file": mesh.get("file", ""), "extra": extra})
+        for tex in asset_elem.findall("texture"):
+            rel = tex.get("file", "")
+            if rel:
+                textures.append({"name": tex.get("name", ""), "file": rel, "type": tex.get("type", "2d")})
+        for mat in asset_elem.findall("material"):
+            materials.append({
+                "name": mat.get("name", ""), "texture": mat.get("texture", ""),
+                "rgba": mat.get("rgba", ""), "shininess": mat.get("shininess", ""),
+                "specular": mat.get("specular", ""),
+            })
+    vis_geoms, col_geoms = [], []
+    worldbody = root.find("worldbody")
+    if worldbody is not None:
+        for geom in worldbody.iter("geom"):
+            cls = geom.get("class", "")
+            if geom.get("name") == "reg_bbox":
+                continue
+            is_visual = cls == "visual" or (geom.get("contype") == "0" and cls != "region")
+            if is_visual:
+                vis_geoms.append({"mesh": geom.get("mesh", ""), "material": geom.get("material", "")})
+            elif cls == "collision":
+                col_geoms.append({"mesh": geom.get("mesh", "")})
+    return {"meshes": meshes, "textures": textures, "materials": materials,
+            "vis_geoms": vis_geoms, "col_geoms": col_geoms}
+
+
+def _inhand_build_xml(category: str, variant_dir: _Path, x: float, y: float, z: float, yaw: float) -> str:
+    base_text = _BASE_SCENE_XML.read_text()
+    parsed = _inhand_parse_model_xml(variant_dir)
+    prefix = "obj"
+    cat_scale = _CATEGORY_MESH_SCALE.get(category)
+
+    lines_asset = [f"    <!-- Object: {category}/{variant_dir.name} -->"]
+    for m in parsed["meshes"]:
+        extra = {**m["extra"]}
+        if cat_scale and "scale" not in extra:
+            extra["scale"] = cat_scale
+        extra_str = "".join(f' {k}="{v}"' for k, v in extra.items())
+        lines_asset.append(f'    <mesh file="{variant_dir / m["file"]}" name="{prefix}_{m["name"]}"{extra_str}/>')
+    for t in parsed["textures"]:
+        lines_asset.append(f'    <texture file="{variant_dir / t["file"]}" name="{prefix}_{t["name"]}" type="{t["type"]}"/>')
+    for mat in parsed["materials"]:
+        attrs = f'name="{prefix}_{mat["name"]}"'
+        if mat["texture"]: attrs += f' texture="{prefix}_{mat["texture"]}"'
+        if mat["rgba"]:    attrs += f' rgba="{mat["rgba"]}"'
+        if mat["shininess"]: attrs += f' shininess="{mat["shininess"]}"'
+        if mat["specular"]:  attrs += f' specular="{mat["specular"]}"'
+        lines_asset.append(f"    <material {attrs}/>")
+
+    w, s = np.cos(yaw / 2), np.sin(yaw / 2)
+    lines_body = [
+        f"    <!-- Task object: {category}/{variant_dir.name} -->",
+        f'    <body name="task_object" pos="{x:.4f} {y:.4f} {z:.4f}" quat="{w:.6f} 0 0 {s:.6f}">',
+        f'      <freejoint name="task_object_joint"/>',
+    ]
+    for vg in parsed["vis_geoms"]:
+        mesh_attr = f'mesh="{prefix}_{vg["mesh"]}"' if vg["mesh"] else ""
+        mat_attr = f' material="{prefix}_{vg["material"]}"' if vg["material"] else ""
+        lines_body.append(
+            f'      <geom type="mesh" {mesh_attr}{mat_attr} contype="0" conaffinity="0" group="2"'
+            f' density="0" solimp="0.998 0.998 0.001" solref="0.001 1"/>')
+    for cg in parsed["col_geoms"]:
+        mesh_attr = f'mesh="{prefix}_{cg["mesh"]}"' if cg["mesh"] else ""
+        lines_body.append(
+            f'      <geom type="mesh" {mesh_attr} group="3" density="{_OBJ_DENSITY}"'
+            f' friction="3.0 0.3 0.05" solimp="0.95 0.99 0.001" solref="0.004 1"/>')
+    lines_body.append("    </body>")
+
+    result = base_text.replace("<!-- TASK_ASSETS_PLACEHOLDER -->", "\n".join(lines_asset))
+    result = result.replace("<!-- TASK_BODY_PLACEHOLDER -->", "\n".join(lines_body))
+    result = result.replace('file="i2rt_yam/', f'file="{_MODELS_DIR}/assets/i2rt_yam/')
+    return result
+
+
+class InHandTransferRandomizer(SceneRandomizer):
+    """Randomizer for inhand_transfer: swaps the entire MuJoCo model on each reset.
+
+    Unlike other randomizers that perturb existing object positions, this one
+    picks a new kitchen tool category/variant and reloads the model from XML so
+    the mesh assets change.  Call ``bind_env(env)`` after construction.
+    """
+
+    perturbations: list = []  # no PerturbRange — we handle placement ourselves
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._env_ref = None
+        self._rng = np.random.default_rng()
+        # Pre-cache variant lists so we don't re-scan on every reset.
+        self._variants: dict[str, list[_Path]] = {}
+
+    def bind_env(self, env: Any) -> None:
+        self._env_ref = env
+
+    def _get_variants(self, category: str) -> list[_Path]:
+        if category not in self._variants:
+            self._variants[category] = _inhand_get_variants(category)
+        return self._variants[category]
+
+    def randomize(self, model: Any, data: Any, seed: int | None = None) -> RandomizationState:
+        if seed is not None:
+            self._rng = np.random.default_rng(seed)
+
+        env = self._env_ref
+        categories = _INHAND_CATEGORIES
+        category = categories[int(self._rng.integers(0, len(categories)))]
+        variants = self._get_variants(category)
+        variant_dir = variants[int(self._rng.integers(0, len(variants)))]
+
+        side = "left" if self._rng.random() < 0.5 else "right"
+        x = float(self._rng.uniform(_X_MIN, _X_MAX))
+        y = float(self._rng.uniform(_Y_LEFT_MIN, _Y_LEFT_MAX) if side == "left"
+                  else self._rng.uniform(_Y_RIGHT_MIN, _Y_RIGHT_MAX))
+        yaw = float(self._rng.uniform(-np.pi, np.pi))
+
+        xml = _inhand_build_xml(category, variant_dir, x, y, _OBJ_Z, yaw)
+
+        if env is not None:
+            env.reload_from_xml(xml)
+            mujoco.mj_resetData(env.model, env.data)
+            env._set_qpos_from_state(env.get_init_q())
+            jnt_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_JOINT, "task_object_joint")
+            qadr = env.model.jnt_qposadr[jnt_id]
+            w, s = np.cos(yaw / 2), np.sin(yaw / 2)
+            env.data.qpos[qadr:qadr + 3] = [x, y, _OBJ_Z]
+            env.data.qpos[qadr + 3:qadr + 7] = [w, 0, 0, s]
+            mujoco.mj_forward(env.model, env.data)
+            # Store metadata for callers
+            env._inhand_category = category
+            env._inhand_variant = variant_dir.name
+            env._inhand_side = side
+
+        return RandomizationState(
+            seed=seed or 0,
+            object_states={"task_object_joint": {"pos": [x, y, _OBJ_Z], "quat": [np.cos(yaw/2), 0, 0, np.sin(yaw/2)]}},
+        )
 
 
 # ---------------------------------------------------------------------------

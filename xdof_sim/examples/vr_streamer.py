@@ -1020,7 +1020,7 @@ def main():
     parser = argparse.ArgumentParser(description="Lightweight VR streaming teleop")
     parser.add_argument("--task", type=str, default="blocks",
                         choices=["bottles", "marker", "ball_sorting", "empty",
-                                 "dishrack", "chess", "chess_flexible", "chess2", "blocks",
+                                 "dishrack", "chess", "blocks",
                                  "mug_tree", "mug_flip", "jenga", "building_blocks", "sweep", "drawer", "pour"])
     parser.add_argument("--port", type=int, default=8012)
     parser.add_argument("--left-leader", type=str, default="left")

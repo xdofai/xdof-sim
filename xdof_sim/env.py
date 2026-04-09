@@ -32,6 +32,7 @@ _SCENE_XMLS = {
     "jenga": _MODELS_DIR / "yam_jenga_scene.xml",
     "building_blocks": _MODELS_DIR / "yam_building_blocks_scene.xml",
     "sweep": _MODELS_DIR / "yam_sweep_scene.xml",
+    "inhand_transfer": _MODELS_DIR / "yam_inhand_transfer_base.xml",
 }
 _DEFAULT_SCENE_XML = Path(
     os.environ.get("MUJOCO_SCENE_XML", str(_SCENE_XMLS["bottles"]))
@@ -70,6 +71,7 @@ class MuJoCoYAMEnv(gym.Env):
         self._physics_dt = physics_dt
         self._control_decimation = control_decimation
         self._scene_xml = Path(scene_xml) if scene_xml else _DEFAULT_SCENE_XML
+        self._scene_xml_string: str | None = None  # set directly for in-memory XML
         self._task: str = ""  # set by make_env after construction
 
         # Populated by reset() when randomize=True; readable by callers.
@@ -123,7 +125,10 @@ class MuJoCoYAMEnv(gym.Env):
     # ------------------------------------------------------------------
 
     def setup_model(self):
-        self.model = mujoco.MjModel.from_xml_path(str(self._scene_xml))
+        if self._scene_xml_string is not None:
+            self.model = mujoco.MjModel.from_xml_string(self._scene_xml_string)
+        else:
+            self.model = mujoco.MjModel.from_xml_path(str(self._scene_xml))
         self.model.opt.timestep = self._physics_dt
         self.data = mujoco.MjData(self.model)
 
@@ -134,6 +139,28 @@ class MuJoCoYAMEnv(gym.Env):
                 width=self._camera_width,
             )
 
+        self._build_index_maps()
+
+    def reload_from_xml(self, xml_string: str) -> None:
+        """Swap out the MuJoCo model in-place from an XML string.
+
+        Closes the existing renderer, loads a new model/data/renderer from
+        the given XML string, and rebuilds index maps.  Does NOT call
+        mj_resetData — the caller is responsible for resetting state afterward.
+        """
+        if hasattr(self, "renderer"):
+            self.renderer.close()
+            del self.renderer
+        self._scene_xml_string = xml_string
+        self.model = mujoco.MjModel.from_xml_string(xml_string)
+        self.model.opt.timestep = self._physics_dt
+        self.data = mujoco.MjData(self.model)
+        if self._render_cameras_flag:
+            self.renderer = mujoco.Renderer(
+                self.model,
+                height=self._camera_height,
+                width=self._camera_width,
+            )
         self._build_index_maps()
 
     def _build_index_maps(self):
@@ -196,10 +223,14 @@ class MuJoCoYAMEnv(gym.Env):
         mujoco.mj_forward(self.model, self.data)
 
         # Object randomization: perturb free-jointed scene objects.
+        # _task_randomizer (set by make_env) takes priority over TASK_RANDOMIZERS
+        # so that model-swapping tasks (e.g. inhand_transfer) work correctly.
         self._last_randomization = None
-        if randomize and self._task:
-            from xdof_sim.randomization import TASK_RANDOMIZERS
-            randomizer = TASK_RANDOMIZERS.get(self._task)
+        if randomize:
+            randomizer = getattr(self, "_task_randomizer", None)
+            if randomizer is None and self._task:
+                from xdof_sim.randomization import TASK_RANDOMIZERS
+                randomizer = TASK_RANDOMIZERS.get(self._task)
             if randomizer is not None:
                 self._last_randomization = randomizer.randomize(
                     self.model, self.data, seed=seed
