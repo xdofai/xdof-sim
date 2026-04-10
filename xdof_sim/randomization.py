@@ -446,16 +446,16 @@ class DishRackRandomizer(SceneRandomizer):
 
 
 class BlocksRandomizer(SceneRandomizer):
-    """Small per-block perturbation for the 26-letter blocks scene.
+    """Per-block perturbation for the 26-letter blocks scene.
 
     Blocks are arranged in a 4-row grid with 55 mm spacing; perturbations
-    keep each block near its nominal position (±12 mm x/y, ±0.25 rad yaw).
+    scatter blocks across the top half of the table (±80 mm x/y, ±0.25 rad yaw).
     """
-    min_clearance_m = 0.030
+    min_clearance_m = 0.01
     perturbations = [
         PerturbRange(f"block_{letter}_jnt",
-                     delta_x=(-0.012, 0.012),
-                     delta_y=(-0.012, 0.012),
+                     delta_x=(-0.08, 0.08),
+                     delta_y=(-0.45, 0.45),
                      delta_yaw=(-0.25, 0.25))
         for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     ]
