@@ -701,27 +701,134 @@ class BallSortingRandomizer(SceneRandomizer):
     ]
 
 
+_CHESS_PIECE_JOINTS = [
+    "black_bishop_1_jnt", "black_bishop_2_jnt", "black_king_1_jnt",
+    "black_knight_1_jnt", "black_knight_2_jnt",
+    "black_pawn_1_jnt", "black_pawn_2_jnt", "black_pawn_3_jnt",
+    "black_pawn_4_jnt", "black_pawn_5_jnt", "black_pawn_6_jnt",
+    "black_pawn_7_jnt", "black_pawn_8_jnt",
+    "black_queen_1_jnt", "black_rook_1_jnt", "black_rook_2_jnt",
+    "white_bishop_1_jnt", "white_bishop_2_jnt", "white_king_1_jnt",
+    "white_knight_1_jnt", "white_knight_2_jnt",
+    "white_pawn_1_jnt", "white_pawn_2_jnt", "white_pawn_3_jnt",
+    "white_pawn_4_jnt", "white_pawn_5_jnt", "white_pawn_6_jnt",
+    "white_pawn_7_jnt", "white_pawn_8_jnt",
+    "white_queen_1_jnt", "white_rook_1_jnt", "white_rook_2_jnt",
+]
+
+
 class ChessRandomizer(SceneRandomizer):
-    """Small per-piece perturbation — chess pieces are tightly packed (~52mm grid)."""
-    min_clearance_m = 0.02
+    """Scatter chess pieces off the board to random locations on the table.
+
+    The chessboard itself receives moderate position and orientation
+    randomization (fixed body).  Pieces are placed anywhere on the table
+    outside the board's *new* footprint.
+
+    Because the board occupies most of the table's X range, the probability
+    that all 32 pieces simultaneously land off the board in one random draw
+    is near zero.  ``_sample_once`` therefore uses per-piece rejection:
+    the board is sampled first, then each piece is individually resampled
+    until it falls outside the board footprint.  The outer rejection loop
+    in the base class still handles pairwise clearance and MuJoCo contacts.
+    """
+    min_clearance_m = 0.056
     perturbations = [
-        PerturbRange(jnt, delta_x=(-0.008, 0.008), delta_y=(-0.008, 0.008),
-                     delta_yaw=(-0.25, 0.25))
-        for jnt in [
-            "black_bishop_1_jnt", "black_bishop_2_jnt", "black_king_1_jnt",
-            "black_knight_1_jnt", "black_knight_2_jnt",
-            "black_pawn_1_jnt", "black_pawn_2_jnt", "black_pawn_3_jnt",
-            "black_pawn_4_jnt", "black_pawn_5_jnt", "black_pawn_6_jnt",
-            "black_pawn_7_jnt", "black_pawn_8_jnt",
-            "black_queen_1_jnt", "black_rook_1_jnt", "black_rook_2_jnt",
-            "white_bishop_1_jnt", "white_bishop_2_jnt", "white_king_1_jnt",
-            "white_knight_1_jnt", "white_knight_2_jnt",
-            "white_pawn_1_jnt", "white_pawn_2_jnt", "white_pawn_3_jnt",
-            "white_pawn_4_jnt", "white_pawn_5_jnt", "white_pawn_6_jnt",
-            "white_pawn_7_jnt", "white_pawn_8_jnt",
-            "white_queen_1_jnt", "white_rook_1_jnt", "white_rook_2_jnt",
-        ]
+        # Board: moderate position + yaw perturbation (fixed body).
+        PerturbRange("chessboard", delta_x=(-0.05, 0.05), delta_y=(-0.10, 0.10),
+                     delta_yaw=(-0.15, 0.15), fixed_body=True),
+        # Pieces: scatter across entire table.
+        *[PerturbRange(jnt, delta_x=(-1.0, 1.0), delta_y=(-1.0, 1.0))
+          for jnt in _CHESS_PIECE_JOINTS],
     ]
+
+    # Board half-extent (from the checker overlay size in the XML) + margin.
+    _board_half: float = 0.224
+    _board_margin: float = 0.05
+    # Max per-piece rejection attempts before giving up on that piece.
+    _per_piece_tries: int = 50
+
+    def _sample_once(
+        self,
+        nominals: dict[str, tuple[np.ndarray, np.ndarray]],
+        rng: np.random.Generator,
+    ) -> dict[str, dict[str, list[float]]]:
+        """Sample board first, then per-piece reject until each is off the board."""
+        x_min, x_max, y_min, y_max = self.table_bounds
+        half = self._board_half + self._board_margin
+        states: dict[str, dict[str, list[float]]] = {}
+
+        # --- 1. Sample the chessboard (fixed body) -------------------------
+        board_p = next(
+            (p for p in self.perturbations if p.joint_name == "chessboard"), None
+        )
+        if board_p is not None and "chessboard" in nominals:
+            nom_pos, nom_quat = nominals["chessboard"]
+            eff_dx = (
+                max(board_p.delta_x[0], x_min - nom_pos[0]),
+                min(board_p.delta_x[1], x_max - nom_pos[0]),
+            )
+            eff_dy = (
+                max(board_p.delta_y[0], y_min - nom_pos[1]),
+                min(board_p.delta_y[1], y_max - nom_pos[1]),
+            )
+            board_new_pos = nom_pos + np.array([
+                rng.uniform(*eff_dx),
+                rng.uniform(*eff_dy),
+                rng.uniform(*board_p.delta_z),
+            ])
+            q_yaw = _quat_from_yaw(rng.uniform(*board_p.delta_yaw))
+            states["chessboard"] = {
+                "pos": board_new_pos.tolist(),
+                "quat": _quat_mul(q_yaw, nom_quat).tolist(),
+            }
+            bcx, bcy = board_new_pos[0], board_new_pos[1]
+        else:
+            # Fallback: use XML default board centre.
+            bcx, bcy = 0.6, 0.0
+
+        # --- 2. Sample each piece, rejecting until off-board AND clear of
+        #        all previously placed pieces.
+        placed_xy: list[np.ndarray] = []
+        clearance = self.min_clearance_m
+
+        for p in self.perturbations:
+            if p.joint_name == "chessboard" or p.joint_name not in nominals:
+                continue
+            nom_pos, nom_quat = nominals[p.joint_name]
+            eff_dx = (
+                max(p.delta_x[0], x_min - nom_pos[0]),
+                min(p.delta_x[1], x_max - nom_pos[0]),
+            )
+            eff_dy = (
+                max(p.delta_y[0], y_min - nom_pos[1]),
+                min(p.delta_y[1], y_max - nom_pos[1]),
+            )
+
+            for _ in range(self._per_piece_tries):
+                new_pos = nom_pos + np.array([
+                    rng.uniform(*eff_dx),
+                    rng.uniform(*eff_dy),
+                    rng.uniform(*p.delta_z),
+                ])
+                # Must be off the board.
+                if abs(new_pos[0] - bcx) < half and abs(new_pos[1] - bcy) < half:
+                    continue
+                # Must be clear of all previously placed pieces.
+                xy = new_pos[:2]
+                if all(np.linalg.norm(xy - prev) >= clearance for prev in placed_xy):
+                    break
+            else:
+                # Exhausted tries — keep last sample (outer loop may still reject).
+                xy = new_pos[:2]
+
+            placed_xy.append(xy)
+            q_yaw = _quat_from_yaw(rng.uniform(*p.delta_yaw))
+            states[p.joint_name] = {
+                "pos": new_pos.tolist(),
+                "quat": _quat_mul(q_yaw, nom_quat).tolist(),
+            }
+
+        return states
 
 
 # chess2 uses the same piece names as chess.
