@@ -371,11 +371,26 @@ VR_HTML = """<!DOCTYPE html>
   #vr-controls { position: absolute; bottom: 20px; width: 100%; text-align: center; z-index: 1;
     display: flex; justify-content: center; gap: 10px; }
   #vr-controls button { position: static !important; transform: none !important; }
+  #rec-light {
+    position: absolute; top: 16px; right: 20px; z-index: 2;
+    width: 20px; height: 20px; border-radius: 50%;
+    background: #333; border: 2px solid #555;
+    transition: background 0.2s, box-shadow 0.2s;
+  }
+  #rec-light.recording {
+    background: #00e676;
+    box-shadow: 0 0 10px 3px rgba(0, 230, 118, 0.7);
+  }
+  #rec-light.stopped {
+    background: #ff1744;
+    box-shadow: 0 0 10px 3px rgba(255, 23, 68, 0.7);
+  }
 </style>
 </head>
 <body>
 <div id="info">Connecting...</div>
 <div id="vr-controls"></div>
+<div id="rec-light"></div>
 
 <script type="importmap">
 {
@@ -804,6 +819,20 @@ renderer.setAnimationLoop(() => {
 });
 
 loadScene();
+
+// Recording indicator light — polls /api/recording-state every 500ms
+const recLight = document.getElementById('rec-light');
+async function updateRecLight() {
+  try {
+    const r = await fetch('/api/recording-state');
+    if (r.ok) {
+      const { is_recording } = await r.json();
+      recLight.className = is_recording ? 'recording' : 'stopped';
+    }
+  } catch (_) {}
+}
+updateRecLight();
+setInterval(updateRecLight, 500);
 </script>
 </body>
 </html>
