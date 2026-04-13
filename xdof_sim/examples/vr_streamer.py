@@ -371,26 +371,11 @@ VR_HTML = """<!DOCTYPE html>
   #vr-controls { position: absolute; bottom: 20px; width: 100%; text-align: center; z-index: 1;
     display: flex; justify-content: center; gap: 10px; }
   #vr-controls button { position: static !important; transform: none !important; }
-  #rec-light {
-    position: absolute; top: 16px; right: 20px; z-index: 2;
-    width: 20px; height: 20px; border-radius: 50%;
-    background: #333; border: 2px solid #555;
-    transition: background 0.2s, box-shadow 0.2s;
-  }
-  #rec-light.recording {
-    background: #00e676;
-    box-shadow: 0 0 10px 3px rgba(0, 230, 118, 0.7);
-  }
-  #rec-light.stopped {
-    background: #ff1744;
-    box-shadow: 0 0 10px 3px rgba(255, 23, 68, 0.7);
-  }
 </style>
 </head>
 <body>
 <div id="info">Connecting...</div>
 <div id="vr-controls"></div>
-<div id="rec-light"></div>
 
 <script type="importmap">
 {
@@ -815,39 +800,39 @@ renderer.setAnimationLoop(() => {
       ws.send(JSON.stringify({ type: 'trigger', left: leftTrigger, right: rightTrigger }));
     }
   }
+  // Recording indicator: pin to XR camera every frame so it's always visible in VR
+  if (renderer.xr.isPresenting) {
+    const xrCam = renderer.xr.getCamera();
+    xrCam.getWorldPosition(_recPos);
+    xrCam.getWorldQuaternion(_recQuat);
+    _recOffset.set(0.12, 0.08, -0.25).applyQuaternion(_recQuat);
+    recDot.position.addVectors(_recPos, _recOffset);
+    recDot.quaternion.copy(_recQuat);
+    recDot.visible = true;
+  } else {
+    recDot.visible = false;
+  }
   renderer.render(scene, camera);
 });
 
 loadScene();
 
-// Recording indicator — 2D overlay (web view) + 3D HUD (VR view)
-const recLight = document.getElementById('rec-light');
-
-// 3D indicator: small sphere attached to XR camera so it appears as a HUD in VR
+// Recording indicator — sphere pinned to headset view in render loop
 const recDotMat = new THREE.MeshBasicMaterial({ color: 0x333333 });
 const recDot = new THREE.Mesh(new THREE.SphereGeometry(0.012, 16, 16), recDotMat);
-recDot.position.set(0.12, 0.08, -0.25); // top-right, ~25cm in front of eyes
-
-renderer.xr.addEventListener('sessionstart', () => {
-  renderer.xr.getCamera().add(recDot);
-});
-renderer.xr.addEventListener('sessionend', () => {
-  renderer.xr.getCamera().remove(recDot);
-});
-
-function applyRecordingState(is_recording) {
-  // 2D overlay
-  recLight.className = is_recording ? 'recording' : 'stopped';
-  // 3D HUD
-  recDotMat.color.setHex(is_recording ? 0x00e676 : 0xff1744);
-}
+scene.add(recDot);
+recDot.visible = false;
+// Pre-allocated objects to avoid GC pressure in the render loop
+const _recPos = new THREE.Vector3();
+const _recQuat = new THREE.Quaternion();
+const _recOffset = new THREE.Vector3();
 
 async function updateRecLight() {
   try {
     const r = await fetch('/api/recording-state');
     if (r.ok) {
       const { is_recording } = await r.json();
-      applyRecordingState(is_recording);
+      recDotMat.color.setHex(is_recording ? 0x00e676 : 0xff1744);
     }
   } catch (_) {}
 }
