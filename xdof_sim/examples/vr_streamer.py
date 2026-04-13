@@ -820,14 +820,34 @@ renderer.setAnimationLoop(() => {
 
 loadScene();
 
-// Recording indicator light — polls /api/recording-state every 500ms
+// Recording indicator — 2D overlay (web view) + 3D HUD (VR view)
 const recLight = document.getElementById('rec-light');
+
+// 3D indicator: small sphere attached to XR camera so it appears as a HUD in VR
+const recDotMat = new THREE.MeshBasicMaterial({ color: 0x333333 });
+const recDot = new THREE.Mesh(new THREE.SphereGeometry(0.012, 16, 16), recDotMat);
+recDot.position.set(0.12, 0.08, -0.25); // top-right, ~25cm in front of eyes
+
+renderer.xr.addEventListener('sessionstart', () => {
+  renderer.xr.getCamera().add(recDot);
+});
+renderer.xr.addEventListener('sessionend', () => {
+  renderer.xr.getCamera().remove(recDot);
+});
+
+function applyRecordingState(is_recording) {
+  // 2D overlay
+  recLight.className = is_recording ? 'recording' : 'stopped';
+  // 3D HUD
+  recDotMat.color.setHex(is_recording ? 0x00e676 : 0xff1744);
+}
+
 async function updateRecLight() {
   try {
     const r = await fetch('/api/recording-state');
     if (r.ok) {
       const { is_recording } = await r.json();
-      recLight.className = is_recording ? 'recording' : 'stopped';
+      applyRecordingState(is_recording);
     }
   } catch (_) {}
 }
