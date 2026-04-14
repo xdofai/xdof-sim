@@ -800,32 +800,18 @@ renderer.setAnimationLoop(() => {
       ws.send(JSON.stringify({ type: 'trigger', left: leftTrigger, right: rightTrigger }));
     }
   }
-  // Recording indicator: pin to XR camera every frame so it's always visible in VR
-  if (renderer.xr.isPresenting) {
-    const xrCam = renderer.xr.getCamera();
-    xrCam.getWorldPosition(_recPos);
-    xrCam.getWorldQuaternion(_recQuat);
-    _recOffset.set(0.12, 0.08, -0.25).applyQuaternion(_recQuat);
-    recDot.position.addVectors(_recPos, _recOffset);
-    recDot.quaternion.copy(_recQuat);
-    recDot.visible = true;
-  } else {
-    recDot.visible = false;
-  }
   renderer.render(scene, camera);
 });
 
 loadScene();
 
-// Recording indicator — sphere pinned to headset view in render loop
+// Recording indicator — fixed sphere at the right end of the aluminum frame in world space.
+// MuJoCo coords (0, -0.65, 0.82) → Three.js world (0.65, 0.82, 0) via Z-up→Y-up +
+// sceneRoot.rotation.y = π/2 conversion.
 const recDotMat = new THREE.MeshBasicMaterial({ color: 0x333333 });
-const recDot = new THREE.Mesh(new THREE.SphereGeometry(0.012, 16, 16), recDotMat);
+const recDot = new THREE.Mesh(new THREE.SphereGeometry(0.025, 16, 16), recDotMat);
+recDot.position.set(0.65, 0.82, 0.0);
 scene.add(recDot);
-recDot.visible = false;
-// Pre-allocated objects to avoid GC pressure in the render loop
-const _recPos = new THREE.Vector3();
-const _recQuat = new THREE.Quaternion();
-const _recOffset = new THREE.Vector3();
 
 async function updateRecLight() {
   try {
