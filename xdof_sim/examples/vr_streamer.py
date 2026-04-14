@@ -818,7 +818,7 @@ async function updateRecLight() {
     const r = await fetch('/api/recording-state');
     if (r.ok) {
       const { is_recording } = await r.json();
-      recDotMat.color.setHex(is_recording ? 0x00e676 : 0xff1744);
+      recDotMat.color.setHex(is_recording ? 0xff1744 : 0x00e676);
     }
   } catch (_) {}
 }
