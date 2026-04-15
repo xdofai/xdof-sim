@@ -820,10 +820,13 @@ async function updateRecLight() {
       const { is_recording } = await r.json();
       recDotMat.color.setHex(is_recording ? 0xff1744 : 0x00e676);
     }
-  } catch (_) {}
+  } catch (_) {
+    console.warn('Failed to fetch recording state:', _);
+  }
 }
-updateRecLight();
-setInterval(updateRecLight, 500);
+(function poll() {
+  updateRecLight().finally(() => setTimeout(poll, 500));
+})();
 </script>
 </body>
 </html>
