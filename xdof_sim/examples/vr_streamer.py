@@ -804,6 +804,29 @@ renderer.setAnimationLoop(() => {
 });
 
 loadScene();
+
+// Recording indicator — fixed sphere at the right end of the aluminum frame in world space.
+// MuJoCo coords (0, -0.65, 0.82) → Three.js world (0.65, 0.82, 0) via Z-up→Y-up +
+// sceneRoot.rotation.y = π/2 conversion.
+const recDotMat = new THREE.MeshBasicMaterial({ color: 0x333333 });
+const recDot = new THREE.Mesh(new THREE.SphereGeometry(0.025, 16, 16), recDotMat);
+recDot.position.set(0.65, 0.82, 0.0);
+scene.add(recDot);
+
+async function updateRecLight() {
+  try {
+    const r = await fetch('/api/recording-state');
+    if (r.ok) {
+      const { is_recording } = await r.json();
+      recDotMat.color.setHex(is_recording ? 0xff1744 : 0x00e676);
+    }
+  } catch (_) {
+    console.warn('Failed to fetch recording state:', _);
+  }
+}
+(function poll() {
+  updateRecLight().finally(() => setTimeout(poll, 500));
+})();
 </script>
 </body>
 </html>
