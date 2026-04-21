@@ -45,7 +45,7 @@
     <material name="black" rgba="0.30 0.30 0.30 1"/>
     <material name="white" rgba="0.9 0.9 0.9 1"/>
     <material name="dark_piece" rgba="0.15 0.12 0.10 1" specular="0.6" shininess="0.8"/>
-    <material name="0.756" rgba="0.92 0.88 0.80 1" specular="0.6" shininess="0.8"/>
+    <material name="light_piece" rgba="0.92 0.88 0.80 1" specular="0.6" shininess="0.8"/>
     <texture name="checker_board" type="2d" builtin="checker"
       rgb1="0.82 0.72 0.55" rgb2="0.35 0.22 0.12" width="512" height="512"/>
     <material name="board_mat" texture="checker_board" texrepeat="4 4" specular="0.3" shininess="0.5"/>
@@ -120,7 +120,8 @@
       diffuse="0.30 0.30 0.30" specular="0.05 0.05 0.05"/>
 
     <!-- Floor -->
-    <geom name="floor" size="0 0 0.05" type="plane" rgba="0.75 0.75 0.75 1"/>
+    <geom name="floor" size="0 0 0.05" type="plane" contype="0" conaffinity="0" rgba="0.75 0.75 0.75 1"/>
+    <geom name="floor_collision" size="0 0 0.05" type="plane" group="3" rgba="0 0 0 0"/>
 
     <!-- Gate/station structure (visual) -->
     <geom type="mesh" contype="0" conaffinity="0" group="2" density="0" rgba="0.60 0.62 0.68 1" mesh="base_visual_gate"/>
@@ -134,7 +135,7 @@
       <body name="top_bar_center" pos="0 0 0.915">
         <body name="top_camera_d405" pos="0.08600512 -0.009 0.03932053" quat="0.183012 0.683013 0.683013 0.183012">
           <geom type="mesh" contype="0" conaffinity="0" group="2" density="0.001" mass="0.001"
-            rgba="0 0 0 0" mesh="camera_d405"/>
+            rgba="0.22 0.22 0.24 1" mesh="camera_d405"/>
           <body name="top_camera_frame" pos="0.009 0 0" quat="0 0 0 1">
             <camera name="top" pos="0 0 0" quat="0 1 0 0" fovy="58"/>
           </body>
@@ -143,12 +144,12 @@
     </body>
 
     <!-- Enclosure walls -->
-    <geom name="back_wall" type="box" size="0.005 0.65 1.0"
-      pos="0.9 0 1.0" group="2" rgba="0.88 0.88 0.88 1"/>
-    <geom name="left_wall" type="box" size="0.45 0.005 1.0"
-      pos="0.45 0.65 1.0" group="2" rgba="0.88 0.88 0.88 1"/>
-    <geom name="right_wall" type="box" size="0.45 0.005 1.0"
-      pos="0.45 -0.65 1.0" group="2" rgba="0.88 0.88 0.88 1"/>
+    <geom name="back_wall" type="box" size="0.005 0.65 1.0" pos="0.9 0 1.0" group="2" contype="0" conaffinity="0" rgba="0.88 0.88 0.88 1"/>
+    <geom name="back_wall_collision" type="box" size="0.005 0.65 1.0" pos="0.9 0 1.0" group="3" rgba="0 0 0 0"/>
+    <geom name="left_wall" type="box" size="0.45 0.005 1.0" pos="0.45 0.65 1.0" group="2" contype="0" conaffinity="0" rgba="0.88 0.88 0.88 1"/>
+    <geom name="left_wall_collision" type="box" size="0.45 0.005 1.0" pos="0.45 0.65 1.0" group="3" rgba="0 0 0 0"/>
+    <geom name="right_wall" type="box" size="0.45 0.005 1.0" pos="0.45 -0.65 1.0" group="2" contype="0" conaffinity="0" rgba="0.88 0.88 0.88 1"/>
+    <geom name="right_wall_collision" type="box" size="0.45 0.005 1.0" pos="0.45 -0.65 1.0" group="3" rgba="0 0 0 0"/>
 
     <!-- Play table -->
     
@@ -181,133 +182,133 @@
     </body>
 
     <!-- ==================== CHESS PIECES ==================== -->
-    <body name="black_bishop_1" pos="0.4059 0.0806 0.756">
+    <body name="black_bishop_1" pos="0.4059 0.0806 0.7969">
       <freejoint name="black_bishop_1_jnt"/>
       <geom name="black_bishop_1_geom" type="mesh" mesh="black_bishop_1" material="dark_piece" mass="0.003" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="black_bishop_2" pos="0.4059 -0.0777 0.756">
+    <body name="black_bishop_2" pos="0.4059 -0.0777 0.7969">
       <freejoint name="black_bishop_2_jnt"/>
       <geom name="black_bishop_2_geom" type="mesh" mesh="black_bishop_2" material="dark_piece" mass="0.003" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="black_king_1" pos="0.4060 -0.0244 0.756">
+    <body name="black_king_1" pos="0.4060 -0.0244 0.7969">
       <freejoint name="black_king_1_jnt"/>
       <geom name="black_king_1_geom" type="mesh" mesh="black_king_1" material="dark_piece" mass="0.006" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="black_knight_1" pos="0.4073 -0.1301 0.756">
+    <body name="black_knight_1" pos="0.4073 -0.1301 0.7969">
       <freejoint name="black_knight_1_jnt"/>
       <geom name="black_knight_1_geom" type="mesh" mesh="black_knight_1" material="dark_piece" mass="0.003" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="black_knight_2" pos="0.4081 0.1326 0.756">
+    <body name="black_knight_2" pos="0.4081 0.1326 0.7969">
       <freejoint name="black_knight_2_jnt"/>
       <geom name="black_knight_2_geom" type="mesh" mesh="black_knight_2" material="dark_piece" mass="0.003" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="black_pawn_1" pos="0.4597 -0.0774 0.756">
+    <body name="black_pawn_1" pos="0.4597 -0.0774 0.7969">
       <freejoint name="black_pawn_1_jnt"/>
       <geom name="black_pawn_1_geom" type="mesh" mesh="black_pawn_1" material="dark_piece" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="black_pawn_2" pos="0.4624 -0.1778 0.756">
+    <body name="black_pawn_2" pos="0.4624 -0.1778 0.7969">
       <freejoint name="black_pawn_2_jnt"/>
       <geom name="black_pawn_2_geom" type="mesh" mesh="black_pawn_2" material="dark_piece" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="black_pawn_3" pos="0.4597 -0.1274 0.756">
+    <body name="black_pawn_3" pos="0.4597 -0.1274 0.7969">
       <freejoint name="black_pawn_3_jnt"/>
       <geom name="black_pawn_3_geom" type="mesh" mesh="black_pawn_3" material="dark_piece" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="black_pawn_4" pos="0.4554 -0.0234 0.756">
+    <body name="black_pawn_4" pos="0.4554 -0.0234 0.7969">
       <freejoint name="black_pawn_4_jnt"/>
       <geom name="black_pawn_4_geom" type="mesh" mesh="black_pawn_4" material="dark_piece" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="black_pawn_5" pos="0.4629 0.0251 0.756">
+    <body name="black_pawn_5" pos="0.4629 0.0251 0.7969">
       <freejoint name="black_pawn_5_jnt"/>
       <geom name="black_pawn_5_geom" type="mesh" mesh="black_pawn_5" material="dark_piece" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="black_pawn_6" pos="0.4601 0.0814 0.756">
+    <body name="black_pawn_6" pos="0.4601 0.0814 0.7969">
       <freejoint name="black_pawn_6_jnt"/>
       <geom name="black_pawn_6_geom" type="mesh" mesh="black_pawn_6" material="dark_piece" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="black_pawn_7" pos="0.4624 0.1271 0.756">
+    <body name="black_pawn_7" pos="0.4624 0.1271 0.7969">
       <freejoint name="black_pawn_7_jnt"/>
       <geom name="black_pawn_7_geom" type="mesh" mesh="black_pawn_7" material="dark_piece" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="black_pawn_8" pos="0.4616 0.1840 0.756">
+    <body name="black_pawn_8" pos="0.4616 0.1840 0.7969">
       <freejoint name="black_pawn_8_jnt"/>
       <geom name="black_pawn_8_geom" type="mesh" mesh="black_pawn_8" material="dark_piece" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="black_queen_1" pos="0.4042 0.0295 0.756">
+    <body name="black_queen_1" pos="0.4042 0.0295 0.7969">
       <freejoint name="black_queen_1_jnt"/>
       <geom name="black_queen_1_geom" type="mesh" mesh="black_queen_1" material="dark_piece" mass="0.005" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="black_rook_1" pos="0.4068 0.1873 0.756">
+    <body name="black_rook_1" pos="0.4068 0.1873 0.7969">
       <freejoint name="black_rook_1_jnt"/>
       <geom name="black_rook_1_geom" type="mesh" mesh="black_rook_1" material="dark_piece" mass="0.004" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="black_rook_2" pos="0.4106 -0.1835 0.756">
+    <body name="black_rook_2" pos="0.4106 -0.1835 0.7969">
       <freejoint name="black_rook_2_jnt"/>
       <geom name="black_rook_2_geom" type="mesh" mesh="black_rook_2" material="dark_piece" mass="0.004" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="white_bishop_1" pos="0.7807 0.0802 0.756">
+    <body name="white_bishop_1" pos="0.7807 0.0802 0.7969">
       <freejoint name="white_bishop_1_jnt"/>
-      <geom name="white_bishop_1_geom" type="mesh" mesh="white_bishop_1" material="0.756" mass="0.003" class="chess_piece" euler="1.5708 0 0"/>
+      <geom name="white_bishop_1_geom" type="mesh" mesh="white_bishop_1" material="light_piece" mass="0.003" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="white_bishop_2" pos="0.7814 -0.0810 0.756">
+    <body name="white_bishop_2" pos="0.7814 -0.0810 0.7969">
       <freejoint name="white_bishop_2_jnt"/>
-      <geom name="white_bishop_2_geom" type="mesh" mesh="white_bishop_2" material="0.756" mass="0.003" class="chess_piece" euler="1.5708 0 0"/>
+      <geom name="white_bishop_2_geom" type="mesh" mesh="white_bishop_2" material="light_piece" mass="0.003" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="white_king_1" pos="0.7784 -0.0260 0.756">
+    <body name="white_king_1" pos="0.7784 -0.0260 0.7969">
       <freejoint name="white_king_1_jnt"/>
-      <geom name="white_king_1_geom" type="mesh" mesh="white_king_1" material="0.756" mass="0.006" class="chess_piece" euler="1.5708 0 0"/>
+      <geom name="white_king_1_geom" type="mesh" mesh="white_king_1" material="light_piece" mass="0.006" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="white_knight_1" pos="0.7818 0.1311 0.756">
+    <body name="white_knight_1" pos="0.7818 0.1311 0.7969">
       <freejoint name="white_knight_1_jnt"/>
-      <geom name="white_knight_1_geom" type="mesh" mesh="white_knight_1" material="0.756" mass="0.003" class="chess_piece" euler="1.5708 0 0"/>
+      <geom name="white_knight_1_geom" type="mesh" mesh="white_knight_1" material="light_piece" mass="0.003" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="white_knight_2" pos="0.7818 -0.1301 0.756">
+    <body name="white_knight_2" pos="0.7818 -0.1301 0.7969">
       <freejoint name="white_knight_2_jnt"/>
-      <geom name="white_knight_2_geom" type="mesh" mesh="white_knight_2" material="0.756" mass="0.003" class="chess_piece" euler="1.5708 0 0"/>
+      <geom name="white_knight_2_geom" type="mesh" mesh="white_knight_2" material="light_piece" mass="0.003" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="white_pawn_1" pos="0.7257 -0.1833 0.756">
+    <body name="white_pawn_1" pos="0.7257 -0.1833 0.7969">
       <freejoint name="white_pawn_1_jnt"/>
-      <geom name="white_pawn_1_geom" type="mesh" mesh="white_pawn_1" material="0.756" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
+      <geom name="white_pawn_1_geom" type="mesh" mesh="white_pawn_1" material="light_piece" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="white_pawn_2" pos="0.7242 -0.1247 0.756">
+    <body name="white_pawn_2" pos="0.7242 -0.1247 0.7969">
       <freejoint name="white_pawn_2_jnt"/>
-      <geom name="white_pawn_2_geom" type="mesh" mesh="white_pawn_2" material="0.756" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
+      <geom name="white_pawn_2_geom" type="mesh" mesh="white_pawn_2" material="light_piece" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="white_pawn_3" pos="0.7265 -0.0790 0.756">
+    <body name="white_pawn_3" pos="0.7265 -0.0790 0.7969">
       <freejoint name="white_pawn_3_jnt"/>
-      <geom name="white_pawn_3_geom" type="mesh" mesh="white_pawn_3" material="0.756" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
+      <geom name="white_pawn_3_geom" type="mesh" mesh="white_pawn_3" material="light_piece" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="white_pawn_4" pos="0.7222 -0.0225 0.756">
+    <body name="white_pawn_4" pos="0.7222 -0.0225 0.7969">
       <freejoint name="white_pawn_4_jnt"/>
-      <geom name="white_pawn_4_geom" type="mesh" mesh="white_pawn_4" material="0.756" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
+      <geom name="white_pawn_4_geom" type="mesh" mesh="white_pawn_4" material="light_piece" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="white_pawn_5" pos="0.7219 0.0258 0.756">
+    <body name="white_pawn_5" pos="0.7219 0.0258 0.7969">
       <freejoint name="white_pawn_5_jnt"/>
-      <geom name="white_pawn_5_geom" type="mesh" mesh="white_pawn_5" material="0.756" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
+      <geom name="white_pawn_5_geom" type="mesh" mesh="white_pawn_5" material="light_piece" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="white_pawn_6" pos="0.7245 0.0797 0.756">
+    <body name="white_pawn_6" pos="0.7245 0.0797 0.7969">
       <freejoint name="white_pawn_6_jnt"/>
-      <geom name="white_pawn_6_geom" type="mesh" mesh="white_pawn_6" material="0.756" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
+      <geom name="white_pawn_6_geom" type="mesh" mesh="white_pawn_6" material="light_piece" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="white_pawn_7" pos="0.7268 0.1299 0.756">
+    <body name="white_pawn_7" pos="0.7268 0.1299 0.7969">
       <freejoint name="white_pawn_7_jnt"/>
-      <geom name="white_pawn_7_geom" type="mesh" mesh="white_pawn_7" material="0.756" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
+      <geom name="white_pawn_7_geom" type="mesh" mesh="white_pawn_7" material="light_piece" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="white_pawn_8" pos="0.7242 0.1803 0.756">
+    <body name="white_pawn_8" pos="0.7242 0.1803 0.7969">
       <freejoint name="white_pawn_8_jnt"/>
-      <geom name="white_pawn_8_geom" type="mesh" mesh="white_pawn_8" material="0.756" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
+      <geom name="white_pawn_8_geom" type="mesh" mesh="white_pawn_8" material="light_piece" mass="0.002" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="white_queen_1" pos="0.7740 0.0307 0.756">
+    <body name="white_queen_1" pos="0.7740 0.0307 0.7969">
       <freejoint name="white_queen_1_jnt"/>
-      <geom name="white_queen_1_geom" type="mesh" mesh="white_queen_1" material="0.756" mass="0.005" class="chess_piece" euler="1.5708 0 0"/>
+      <geom name="white_queen_1_geom" type="mesh" mesh="white_queen_1" material="light_piece" mass="0.005" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="white_rook_1" pos="0.7770 0.1835 0.756">
+    <body name="white_rook_1" pos="0.7770 0.1835 0.7969">
       <freejoint name="white_rook_1_jnt"/>
-      <geom name="white_rook_1_geom" type="mesh" mesh="white_rook_1" material="0.756" mass="0.004" class="chess_piece" euler="1.5708 0 0"/>
+      <geom name="white_rook_1_geom" type="mesh" mesh="white_rook_1" material="light_piece" mass="0.004" class="chess_piece" euler="1.5708 0 0"/>
     </body>
-    <body name="white_rook_2" pos="0.7798 -0.1848 0.756">
+    <body name="white_rook_2" pos="0.7798 -0.1848 0.7969">
       <freejoint name="white_rook_2_jnt"/>
-      <geom name="white_rook_2_geom" type="mesh" mesh="white_rook_2" material="0.756" mass="0.004" class="chess_piece" euler="1.5708 0 0"/>
+      <geom name="white_rook_2_geom" type="mesh" mesh="white_rook_2" material="light_piece" mass="0.004" class="chess_piece" euler="1.5708 0 0"/>
     </body>
 
     <!-- ==================== LEFT ARM ==================== -->
@@ -363,10 +364,10 @@
                   <site name="left_tcp_site" pos="0 0 0" quat="1 0 0 -1" size="0.005" rgba="1 0 0 1" group="4"/>
                   <site name="left_grasp_site" pos="0 0 0.1347" quat="1 0 0 -1" size="0.005" rgba="0 1 0 1" group="4"/>
                   <body name="left_camera_d405" pos="-0.0107 0.095 0.062" quat="0.906 0.423 0 0">
-                    <geom type="mesh" contype="0" conaffinity="0" group="3" density="0.001" mass="0.001"
-                      rgba="0 0 0 0" mesh="camera_d405"/>
+                    <geom type="mesh" contype="0" conaffinity="0" group="2" density="0.001" mass="0.001"
+                      rgba="0.22 0.22 0.24 1" mesh="camera_d405"/>
                     <geom name="left_cam_col" type="sphere" size="0.02" pos="0 0 0"
-                      group="3" rgba="0 0 1 0.0" mass="0.001"/>
+                      group="3" rgba="0.1 0.4 1 0.3" mass="0.001"/>
                     <body name="left_camera_frame" pos="0.009 0 0" quat="0 0 0 1">
                       <camera name="left" pos="0 0 0" quat="0 1 0 0" fovy="58"/>
                     </body>
@@ -480,10 +481,10 @@
                   <site name="right_tcp_site" pos="0 0 0" quat="1 0 0 -1" size="0.005" rgba="1 0 0 1" group="4"/>
                   <site name="right_grasp_site" pos="0 0 0.1347" quat="1 0 0 -1" size="0.005" rgba="0 1 0 1" group="4"/>
                   <body name="right_camera_d405" pos="-0.0107 0.095 0.062" quat="0.906 0.423 0 0">
-                    <geom type="mesh" contype="0" conaffinity="0" group="3" density="0.001" mass="0.001"
-                      rgba="0 0 0 0" mesh="camera_d405"/>
+                    <geom type="mesh" contype="0" conaffinity="0" group="2" density="0.001" mass="0.001"
+                      rgba="0.22 0.22 0.24 1" mesh="camera_d405"/>
                     <geom name="right_cam_col" type="sphere" size="0.02" pos="0 0 0"
-                      group="3" rgba="0 0 1 0.0" mass="0.001"/>
+                      group="3" rgba="0.1 0.4 1 0.3" mass="0.001"/>
                     <body name="right_camera_frame" pos="0.009 0 0" quat="0 0 0 1">
                       <camera name="right" pos="0 0 0" quat="0 1 0 0" fovy="58"/>
                     </body>
@@ -573,7 +574,7 @@
   <!-- qpos: 32 piece freejoints (7 each) + 16 arm joints -->
   <keyframe>
     <key name="home"
-      qpos="0.4059 0.0806 0.756 1 0 0 0 0.4059 -0.0777 0.756 1 0 0 0 0.4060 -0.0244 0.756 1 0 0 0 0.4073 -0.1301 0.756 1 0 0 0 0.4081 0.1326 0.756 1 0 0 0 0.4597 -0.0774 0.756 1 0 0 0 0.4624 -0.1778 0.756 1 0 0 0 0.4597 -0.1274 0.756 1 0 0 0 0.4554 -0.0234 0.756 1 0 0 0 0.4629 0.0251 0.756 1 0 0 0 0.4601 0.0814 0.756 1 0 0 0 0.4624 0.1271 0.756 1 0 0 0 0.4616 0.1840 0.756 1 0 0 0 0.4042 0.0295 0.756 1 0 0 0 0.4068 0.1873 0.756 1 0 0 0 0.4106 -0.1835 0.756 1 0 0 0 0.7807 0.0802 0.756 1 0 0 0 0.7814 -0.0810 0.756 1 0 0 0 0.7784 -0.0260 0.756 1 0 0 0 0.7818 0.1311 0.756 1 0 0 0 0.7818 -0.1301 0.756 1 0 0 0 0.7257 -0.1833 0.756 1 0 0 0 0.7242 -0.1247 0.756 1 0 0 0 0.7265 -0.0790 0.756 1 0 0 0 0.7222 -0.0225 0.756 1 0 0 0 0.7219 0.0258 0.756 1 0 0 0 0.7245 0.0797 0.756 1 0 0 0 0.7268 0.1299 0.756 1 0 0 0 0.7242 0.1803 0.756 1 0 0 0 0.7740 0.0307 0.756 1 0 0 0 0.7770 0.1835 0.756 1 0 0 0 0.7798 -0.1848 0.756 1 0 0 0
+      qpos="0.4059 0.0806 0.7969 1 0 0 0 0.4059 -0.0777 0.7969 1 0 0 0 0.4060 -0.0244 0.7969 1 0 0 0 0.4073 -0.1301 0.7969 1 0 0 0 0.4081 0.1326 0.7969 1 0 0 0 0.4597 -0.0774 0.7969 1 0 0 0 0.4624 -0.1778 0.7969 1 0 0 0 0.4597 -0.1274 0.7969 1 0 0 0 0.4554 -0.0234 0.7969 1 0 0 0 0.4629 0.0251 0.7969 1 0 0 0 0.4601 0.0814 0.7969 1 0 0 0 0.4624 0.1271 0.7969 1 0 0 0 0.4616 0.1840 0.7969 1 0 0 0 0.4042 0.0295 0.7969 1 0 0 0 0.4068 0.1873 0.7969 1 0 0 0 0.4106 -0.1835 0.7969 1 0 0 0 0.7807 0.0802 0.7969 1 0 0 0 0.7814 -0.0810 0.7969 1 0 0 0 0.7784 -0.0260 0.7969 1 0 0 0 0.7818 0.1311 0.7969 1 0 0 0 0.7818 -0.1301 0.7969 1 0 0 0 0.7257 -0.1833 0.7969 1 0 0 0 0.7242 -0.1247 0.7969 1 0 0 0 0.7265 -0.0790 0.7969 1 0 0 0 0.7222 -0.0225 0.7969 1 0 0 0 0.7219 0.0258 0.7969 1 0 0 0 0.7245 0.0797 0.7969 1 0 0 0 0.7268 0.1299 0.7969 1 0 0 0 0.7242 0.1803 0.7969 1 0 0 0 0.7740 0.0307 0.7969 1 0 0 0 0.7770 0.1835 0.7969 1 0 0 0 0.7798 -0.1848 0.7969 1 0 0 0
             0 1.047 1.047 0 0 0 0 0  0 1.047 1.047 0 0 0 0 0"
       ctrl="0 1.047 1.047 0 0 0 0  0 1.047 1.047 0 0 0 0"/>
   </keyframe>

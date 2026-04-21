@@ -766,7 +766,7 @@ def main():
         "--task",
         type=str,
         default="bottles",
-        choices=["bottles", "marker", "pour", "spelling", "drawer"],
+        choices=["bottles", "marker", "pour", "blocks", "drawer"],
         help="Task scene — 'bottles' (default) or 'marker'.",
     )
     parser.add_argument("--port", type=int, default=8080, help="Viser server port.")

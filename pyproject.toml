@@ -13,6 +13,9 @@ license = {text = "MIT"}
 dependencies = [
     "mujoco>=3.0",
     "gymnasium>=0.29",
+    "mcap>=1.1",
+    "mcap-protobuf-support>=0.5",
+    "mcap-ros2-support>=0.5",
     "numpy>=1.24",
     "opencv-python>=4.8",
     "Pillow>=10.0",
@@ -46,8 +49,14 @@ ik = [
     "xdof-sim[viser]",
     "scipy>=1.10",
 ]
+vr = [
+    "xdof-sim[teleop]",
+    "trimesh>=4.0",
+    "scipy>=1.10",
+    "aiohttp>=3.10",
+]
 all = [
-    "xdof-sim[policy,teleop,gello,video,viser,ik]",
+    "xdof-sim[policy,teleop,gello,video,viser,ik,vr]",
 ]
 
 [tool.setuptools.packages.find]

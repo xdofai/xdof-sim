@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import os
+import copy
 from pathlib import Path
 from typing import Any, Optional
 
@@ -12,34 +12,57 @@ import mujoco
 import numpy as np
 
 from xdof_sim.config import RobotSystemConfig
+from xdof_sim.rendering.live import LiveRenderBackend, create_live_camera_provider
+from xdof_sim.task_eval import TaskEvalResult, make_task_evaluator
+from xdof_sim.task_registry import DEFAULT_SCENE_XML, SCENE_XMLS, get_task_randomizer, resolve_task
+from xdof_sim.task_specs import SimTaskSpec, maybe_get_task_spec
 
-# Path to scene XMLs (override with MUJOCO_SCENE_XML env var)
-_MODELS_DIR = Path(__file__).parent / "models"
-_SCENE_XMLS = {
-    "bottles": _MODELS_DIR / "yam_bottles_scene.xml",
-    "marker": _MODELS_DIR / "yam_marker_scene.xml",
-    "ball_sorting": _MODELS_DIR / "yam_ball_sorting_scene.xml",
-    "empty": _MODELS_DIR / "yam_bimanual_empty.xml",
-    "dishrack": _MODELS_DIR / "yam_dishwasher_scene.xml",
-    "chess": _MODELS_DIR / "yam_chess_scene.xml",
-    "chess_flexible": _MODELS_DIR / "yam_flexible_chess_scene.xml",
-    "chess2": _MODELS_DIR / "yam_chess2_scene.xml",
-    "blocks": _MODELS_DIR / "yam_blocks_scene.xml",
-    "mug_tree": _MODELS_DIR / "yam_mug_tree_scene.xml",
-    "mug_flip": _MODELS_DIR / "yam_mug_flip_scene.xml",
-    "pour": _MODELS_DIR / "yam_pour_screw_scene.xml",
-    "drawer": _MODELS_DIR / "yam_drawer_scene.xml",
-    "jenga": _MODELS_DIR / "yam_jenga_scene.xml",
-    "building_blocks": _MODELS_DIR / "yam_building_blocks_scene.xml",
-    "sweep": _MODELS_DIR / "yam_sweep_scene.xml",
-    "inhand_transfer": _MODELS_DIR / "yam_inhand_transfer_base.xml",
-}
-_DEFAULT_SCENE_XML = Path(
-    os.environ.get("MUJOCO_SCENE_XML", str(_SCENE_XMLS["bottles"]))
-)
+# Backwards-compatible aliases for older imports.
+_SCENE_XMLS = dict(SCENE_XMLS)
+_DEFAULT_SCENE_XML = DEFAULT_SCENE_XML
 
 # Gripper actuator ctrl range max (from menagerie model)
 _GRIPPER_CTRL_MAX = 0.0475
+
+
+def project_policy_state(
+    qpos: np.ndarray,
+    qpos_indices: list[int],
+    gripper_indices: list[int],
+    *,
+    dtype=np.float32,
+) -> np.ndarray:
+    """Project MuJoCo qpos into the 14D policy-space state vector."""
+    state = np.zeros(len(qpos_indices), dtype=dtype)
+    gripper_set = set(gripper_indices)
+    for i, qpos_idx in enumerate(qpos_indices):
+        val = qpos[qpos_idx]
+        if i in gripper_set:
+            val = np.clip(val / _GRIPPER_CTRL_MAX, 0.0, 1.0)
+        state[i] = val
+    return state
+
+
+def project_policy_state_batch(
+    qpos_batch: np.ndarray,
+    qpos_indices: list[int],
+    gripper_indices: list[int],
+    *,
+    dtype=np.float32,
+) -> np.ndarray:
+    """Project a batch of MuJoCo qpos vectors into policy-space states."""
+    qpos_batch = np.asarray(qpos_batch)
+    if qpos_batch.ndim != 2:
+        raise ValueError(f"Expected batched qpos with shape (B, nq), got {qpos_batch.shape}")
+
+    state = np.asarray(qpos_batch[:, qpos_indices], dtype=dtype)
+    if gripper_indices:
+        state[:, gripper_indices] = np.clip(
+            state[:, gripper_indices] / _GRIPPER_CTRL_MAX,
+            0.0,
+            1.0,
+        )
+    return state
 
 
 class MuJoCoYAMEnv(gym.Env):
@@ -55,6 +78,8 @@ class MuJoCoYAMEnv(gym.Env):
         chunk_dim: int = 30,
         prompt: str = "fold the towel",
         render_cameras: bool = True,
+        camera_backend: LiveRenderBackend = "mujoco",
+        camera_gpu_id: int | None = None,
         camera_height: int = 480,
         camera_width: int = 640,
         physics_dt: float = 0.002,
@@ -66,13 +91,18 @@ class MuJoCoYAMEnv(gym.Env):
         self.chunk_dim = chunk_dim
         self.prompt = prompt
         self._render_cameras_flag = render_cameras
+        self._camera_backend: LiveRenderBackend = camera_backend
+        self._camera_gpu_id = camera_gpu_id
         self._camera_height = camera_height
         self._camera_width = camera_width
         self._physics_dt = physics_dt
         self._control_decimation = control_decimation
         self._scene_xml = Path(scene_xml) if scene_xml else _DEFAULT_SCENE_XML
         self._scene_xml_string: str | None = None  # set directly for in-memory XML
+        self._task_request: str = ""
         self._task: str = ""  # set by make_env after construction
+        self._task_spec: SimTaskSpec | None = None
+        self._task_evaluator = None
 
         # Populated by reset() when randomize=True; readable by callers.
         self._last_randomization: Any = None
@@ -126,18 +156,34 @@ class MuJoCoYAMEnv(gym.Env):
 
     def setup_model(self):
         if self._scene_xml_string is not None:
-            self.model = mujoco.MjModel.from_xml_string(self._scene_xml_string)
+            model = mujoco.MjModel.from_xml_string(self._scene_xml_string)
         else:
-            self.model = mujoco.MjModel.from_xml_path(str(self._scene_xml))
+            model = mujoco.MjModel.from_xml_path(str(self._scene_xml))
+        self._bind_model(model)
+
+    def _bind_model(self, model: mujoco.MjModel) -> None:
+        self.model = model
         self.model.opt.timestep = self._physics_dt
         self.data = mujoco.MjData(self.model)
+        self._camera_provider = None
 
         if self._render_cameras_flag:
-            self.renderer = mujoco.Renderer(
-                self.model,
-                height=self._camera_height,
-                width=self._camera_width,
-            )
+            if self._camera_backend == "mujoco":
+                self.renderer = mujoco.Renderer(
+                    self.model,
+                    height=self._camera_height,
+                    width=self._camera_width,
+                )
+            else:
+                self._camera_provider = create_live_camera_provider(
+                    model=self.model,
+                    data=self.data,
+                    backend=self._camera_backend,
+                    width=self._camera_width,
+                    height=self._camera_height,
+                    gpu_id=self._camera_gpu_id,
+                    camera_names=tuple(self.camera_names),
+                )
 
         self._build_index_maps()
 
@@ -148,20 +194,27 @@ class MuJoCoYAMEnv(gym.Env):
         the given XML string, and rebuilds index maps.  Does NOT call
         mj_resetData — the caller is responsible for resetting state afterward.
         """
+        self._scene_xml_string = xml_string
+        self._close_camera_backend()
+        self.setup_model()
+
+    def reload_from_model(self, model: mujoco.MjModel) -> None:
+        """Swap in a copy of an already-compiled MuJoCo model."""
+        self._scene_xml_string = None
+        self._close_camera_backend()
+        self._bind_model(copy.deepcopy(model))
+
+    def _reset_camera_backend(self) -> None:
+        if self._camera_provider is not None:
+            self._camera_provider.reset()
+
+    def _close_camera_backend(self) -> None:
+        if self._camera_provider is not None:
+            self._camera_provider.close()
+            self._camera_provider = None
         if hasattr(self, "renderer"):
             self.renderer.close()
             del self.renderer
-        self._scene_xml_string = xml_string
-        self.model = mujoco.MjModel.from_xml_string(xml_string)
-        self.model.opt.timestep = self._physics_dt
-        self.data = mujoco.MjData(self.model)
-        if self._render_cameras_flag:
-            self.renderer = mujoco.Renderer(
-                self.model,
-                height=self._camera_height,
-                width=self._camera_width,
-            )
-        self._build_index_maps()
 
     def _build_index_maps(self):
         """Build mappings from 14D state/action to MuJoCo qpos/ctrl indices."""
@@ -227,17 +280,29 @@ class MuJoCoYAMEnv(gym.Env):
         # so that model-swapping tasks (e.g. inhand_transfer) work correctly.
         self._last_randomization = None
         if randomize:
+            randomization_request = None
+            if options is not None:
+                randomization_request = options.get("randomization")
             randomizer = getattr(self, "_task_randomizer", None)
             if randomizer is None and self._task:
-                from xdof_sim.randomization import TASK_RANDOMIZERS
-                randomizer = TASK_RANDOMIZERS.get(self._task)
+                randomizer = get_task_randomizer(self._task)
             if randomizer is not None:
                 self._last_randomization = randomizer.randomize(
-                    self.model, self.data, seed=seed
+                    self.model,
+                    self.data,
+                    seed=seed,
+                    request=randomization_request,
                 )
 
+        self._reset_camera_backend()
+        if self._task_evaluator is not None:
+            self._task_evaluator.reset(nworld=1)
+
         self.cur_step = 0
-        return self.get_obs(), {}
+        info: dict[str, Any] = {}
+        if self._last_randomization is not None:
+            info["randomization"] = self._last_randomization
+        return self.get_obs(), info
 
     def step(self, action: np.ndarray):
         action = np.asarray(action, dtype=np.float32).reshape(
@@ -250,11 +315,17 @@ class MuJoCoYAMEnv(gym.Env):
 
         final_obs = all_obs[-1]
         chunk_history = self._stack_obs(all_obs)
-        return final_obs, chunk_history, 0.0, False, False, {}
+        task_eval = self.evaluate_task()
+        reward = task_eval.scalar_reward() if task_eval is not None else 0.0
+        info: dict[str, Any] = {}
+        if task_eval is not None:
+            info["task_reward"] = reward
+            info["task_success"] = task_eval.scalar_success()
+            info["task_eval"] = task_eval.to_info(squeeze=True)
+        return final_obs, chunk_history, reward, False, False, info
 
     def close(self):
-        if hasattr(self, "renderer"):
-            self.renderer.close()
+        self._close_camera_backend()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -283,16 +354,39 @@ class MuJoCoYAMEnv(gym.Env):
         for _ in range(self._control_decimation):
             mujoco.mj_step(self.model, self.data)
 
+    def project_state_from_qpos(self, qpos: np.ndarray) -> np.ndarray:
+        """Project an arbitrary qpos vector into the 14D policy-space state."""
+        return project_policy_state(
+            qpos,
+            self._qpos_indices,
+            self._gripper_indices,
+            dtype=np.float32,
+        )
+
+    def get_state(self) -> np.ndarray:
+        """Return the current 14D policy-space state from MuJoCo qpos."""
+        return self.project_state_from_qpos(self.data.qpos)
+
+    def set_task(self, task: str) -> None:
+        """Configure the task name and attach any registered evaluator."""
+
+        resolved = resolve_task(task)
+        self._task_request = task
+        self._task = resolved.env_task or task
+        self._task_spec = resolved.task_spec or maybe_get_task_spec(task)
+        self._task_evaluator = make_task_evaluator(self.model, self._task_spec)
+
+    def evaluate_task(self) -> TaskEvalResult | None:
+        """Compute the current task reward/success from the current simulation state."""
+
+        if self._task_evaluator is None:
+            return None
+        qpos_batch = np.asarray(self.data.qpos, dtype=np.float32)[None, :]
+        return self._task_evaluator.evaluate_qpos_batch(qpos_batch)
+
     def get_obs(self) -> dict[str, Any]:
         """Return observation dict with state, images, and metadata."""
-        # State: read qpos for the 14 controlled joints
-        state = np.zeros(self.single_timestep_action_dim, dtype=np.float32)
-        for i, qpos_idx in enumerate(self._qpos_indices):
-            val = self.data.qpos[qpos_idx]
-            if i in self._gripper_set:
-                # MuJoCo joint space → [0, 1] policy space
-                val = np.clip(val / _GRIPPER_CTRL_MAX, 0.0, 1.0)
-            state[i] = val
+        state = self.get_state()
 
         # Images
         if self._render_cameras_flag:
@@ -319,6 +413,13 @@ class MuJoCoYAMEnv(gym.Env):
 
     def _render_cameras(self) -> dict[str, np.ndarray]:
         """Render all cameras and return (3, H, W) uint8 images."""
+        if self._camera_provider is not None:
+            frames = self._camera_provider.frames_for_step(self.cur_step, self.data.time)
+            return {
+                name: frame.transpose(2, 0, 1).copy()
+                for name, frame in frames.items()
+            }
+
         images = {}
         for name in self.camera_names:
             self.renderer.update_scene(self.data, camera=name)

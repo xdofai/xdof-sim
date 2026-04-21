@@ -12,13 +12,37 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-declare -A PACKS=(
-    ["objects_lightwheel"]="vckqvvkh1z8t69k8qcpcmee6k66stii4"
-    ["objaverse"]="03eionyo8fk3a9dsksq9jb8du5lqfw8h"
+PACK_NAMES=(
+    "objects_lightwheel"
+    "objaverse"
 )
 
-for name in "${!PACKS[@]}"; do
-    id="${PACKS[$name]}"
+PACK_IDS=(
+    "vckqvvkh1z8t69k8qcpcmee6k66stii4"
+    "03eionyo8fk3a9dsksq9jb8du5lqfw8h"
+)
+
+download_file() {
+    local url="$1"
+    local output="$2"
+
+    if command -v wget >/dev/null 2>&1; then
+        wget -O "$output" "$url"
+        return
+    fi
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -L "$url" -o "$output"
+        return
+    fi
+
+    echo "Error: need either wget or curl to download assets." >&2
+    exit 1
+}
+
+for i in "${!PACK_NAMES[@]}"; do
+    name="${PACK_NAMES[$i]}"
+    id="${PACK_IDS[$i]}"
     zip_file="${name}.zip"
     url="https://utexas.box.com/shared/static/${id}.zip"
 
@@ -28,7 +52,7 @@ for name in "${!PACKS[@]}"; do
     fi
 
     echo "--- Downloading ${name} ---"
-    wget -O "$zip_file" "$url"
+    download_file "$url" "$zip_file"
 
     echo "--- Unzipping ${name} ---"
     mkdir -p "$name"

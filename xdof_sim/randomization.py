@@ -14,7 +14,9 @@ nominal positions or the sampler implementation.
 
 from __future__ import annotations
 
+import copy
 import logging
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -31,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PerturbRange:
-    """Translation and yaw perturbation range for one object.
+    """Translation and orientation perturbation range for one object.
 
     For free-jointed objects set ``joint_name`` to the joint name and leave
     ``fixed_body=False`` (default).  For fixed bodies that should be moved by
@@ -47,8 +49,18 @@ class PerturbRange:
     delta_x: tuple[float, float]       # (min, max) metres
     delta_y: tuple[float, float]       # (min, max) metres
     delta_z: tuple[float, float] = field(default=(0.0, 0.0))   # stay on table
+    delta_roll: tuple[float, float] = field(default=(0.0, 0.0))
+    delta_pitch: tuple[float, float] = field(default=(0.0, 0.0))
     delta_yaw: tuple[float, float] = field(default=(-np.pi, np.pi))
     fixed_body: bool = False  # if True, treat joint_name as a body name
+
+
+@dataclass
+class ScalePerturbRange:
+    """Uniform multiplicative object-scale perturbation for one movable object."""
+
+    target_name: str
+    scale_factor: tuple[float, float] = field(default=(0.95, 1.05))
 
 
 @dataclass
@@ -62,14 +74,81 @@ class RandomizationState:
 
     seed: int
     object_states: dict[str, dict[str, list[float]]]
+    scale_states: dict[str, float] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     # e.g. {"bottle_1_joint": {"pos": [x,y,z], "quat": [w,x,y,z]}, ...}
 
     def to_dict(self) -> dict[str, Any]:
-        return {"seed": self.seed, "object_states": self.object_states}
+        return {
+            "seed": self.seed,
+            "object_states": self.object_states,
+            "scale_states": self.scale_states,
+            "metadata": self.metadata,
+        }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "RandomizationState":
-        return cls(seed=d["seed"], object_states=d["object_states"])
+        return cls(
+            seed=d["seed"],
+            object_states=d["object_states"],
+            scale_states=d.get("scale_states", {}),
+            metadata=d.get("metadata", {}),
+        )
+
+
+@dataclass(frozen=True)
+class DishRackResetRequest:
+    """Optional reset controls for the dishrack randomizer."""
+
+    plate_variant: str | None = None
+    plate_count: int | None = None
+    dish_rack_variant: str | None = None
+    cycle_plate: int = 0
+    cycle_dish_rack: int = 0
+    randomize_variants: bool | None = None
+    randomize_scales: bool | None = None
+
+    @classmethod
+    def from_value(cls, value: Any | None) -> "DishRackResetRequest":
+        if value is None:
+            return cls()
+        if isinstance(value, cls):
+            return value
+        if not isinstance(value, dict):
+            raise TypeError(
+                "DishRack reset request must be a dict or DishRackResetRequest, "
+                f"got {type(value).__name__}"
+            )
+
+        def _optional_str(key: str) -> str | None:
+            raw = value.get(key)
+            if raw is None:
+                return None
+            return str(raw)
+
+        def _int_value(key: str) -> int:
+            raw = value.get(key, 0)
+            if raw is None:
+                return 0
+            return int(raw)
+
+        randomize_variants = value.get("randomize_variants")
+        if randomize_variants is not None:
+            randomize_variants = bool(randomize_variants)
+
+        randomize_scales = value.get("randomize_scales")
+        if randomize_scales is not None:
+            randomize_scales = bool(randomize_scales)
+
+        return cls(
+            plate_variant=_optional_str("plate_variant"),
+            plate_count=value.get("plate_count"),
+            dish_rack_variant=_optional_str("dish_rack_variant"),
+            cycle_plate=_int_value("cycle_plate"),
+            cycle_dish_rack=_int_value("cycle_dish_rack"),
+            randomize_variants=randomize_variants,
+            randomize_scales=randomize_scales,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +158,22 @@ class RandomizationState:
 
 def _quat_from_yaw(yaw: float) -> np.ndarray:
     """wxyz quaternion for a rotation of ``yaw`` radians about world Z."""
-    return np.array([np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)])
+    return _quat_from_axis_angle(np.array([0.0, 0.0, 1.0]), yaw)
+
+
+def _quat_from_axis_angle(axis: np.ndarray, angle: float) -> np.ndarray:
+    """wxyz quaternion for a rotation of ``angle`` radians about ``axis``."""
+    axis = np.asarray(axis, dtype=np.float64)
+    norm = float(np.linalg.norm(axis))
+    if norm < 1e-12 or abs(angle) < 1e-12:
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    axis = axis / norm
+    half_angle = angle / 2.0
+    sin_half = np.sin(half_angle)
+    return np.array(
+        [np.cos(half_angle), axis[0] * sin_half, axis[1] * sin_half, axis[2] * sin_half],
+        dtype=np.float64,
+    )
 
 
 def _quat_mul(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
@@ -92,6 +186,185 @@ def _quat_mul(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
         w1*y2 - x1*z2 + y1*w2 + z1*x2,
         w1*z2 + x1*y2 - y1*x2 + z1*w2,
     ])
+
+
+def _yaw_from_quat(q: np.ndarray) -> float:
+    """Return the world-Z yaw for a wxyz quaternion."""
+    w, x, y, z = q
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    return float(np.arctan2(siny_cosp, cosy_cosp))
+
+
+def _sample_orientation_delta(
+    perturbation: PerturbRange,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Sample a quaternion delta from roll/pitch/yaw ranges."""
+    q_roll = _quat_from_axis_angle(np.array([1.0, 0.0, 0.0]), rng.uniform(*perturbation.delta_roll))
+    q_pitch = _quat_from_axis_angle(np.array([0.0, 1.0, 0.0]), rng.uniform(*perturbation.delta_pitch))
+    q_yaw = _quat_from_yaw(rng.uniform(*perturbation.delta_yaw))
+    return _quat_mul(_quat_mul(q_yaw, q_pitch), q_roll)
+
+
+def _parse_float_list(value: str) -> list[float]:
+    return [float(part) for part in value.split()]
+
+
+def _format_float_list(values: list[float]) -> str:
+    return " ".join(f"{float(value):.9g}" for value in values)
+
+
+def _scale_numeric_attr(elem: _ET.Element, attr: str, factor: float) -> None:
+    value = elem.get(attr)
+    if not value:
+        return
+    elem.set(attr, _format_float_list([part * factor for part in _parse_float_list(value)]))
+
+
+def _scaled_mesh_attr(scale_value: str | None, factor: float) -> str:
+    if not scale_value:
+        parts = [1.0, 1.0, 1.0]
+    else:
+        parts = _parse_float_list(scale_value)
+        if len(parts) == 1:
+            parts = parts * 3
+    return _format_float_list([part * factor for part in parts])
+
+
+def _safe_scale_suffix(name: str) -> str:
+    safe = "".join(ch if ch.isalnum() else "_" for ch in name).strip("_")
+    return safe or "scaled"
+
+
+def _find_body_for_scale_target(root: _ET.Element, target_name: str) -> _ET.Element | None:
+    for body in root.iter("body"):
+        for child in body:
+            if child.tag in {"joint", "freejoint"} and child.get("name") == target_name:
+                return body
+    for body in root.iter("body"):
+        if body.get("name") == target_name:
+            return body
+    return None
+
+
+def _clone_scaled_mesh(
+    *,
+    asset_elem: _ET.Element,
+    mesh_assets: dict[str, _ET.Element],
+    mesh_name: str,
+    factor: float,
+    target_name: str,
+    cache: dict[str, str],
+) -> str:
+    if mesh_name in cache:
+        return cache[mesh_name]
+
+    mesh_elem = mesh_assets.get(mesh_name)
+    if mesh_elem is None:
+        return mesh_name
+
+    new_name = f"{mesh_name}__scaled__{_safe_scale_suffix(target_name)}"
+    suffix = 1
+    while new_name in mesh_assets:
+        suffix += 1
+        new_name = f"{mesh_name}__scaled__{_safe_scale_suffix(target_name)}_{suffix}"
+
+    cloned = copy.deepcopy(mesh_elem)
+    cloned.set("name", new_name)
+    cloned.set("scale", _scaled_mesh_attr(mesh_elem.get("scale"), factor))
+    asset_elem.append(cloned)
+    mesh_assets[new_name] = cloned
+    cache[mesh_name] = new_name
+    return new_name
+
+
+def _scale_body_subtree(
+    *,
+    body: _ET.Element,
+    factor: float,
+    target_name: str,
+    asset_elem: _ET.Element,
+    mesh_assets: dict[str, _ET.Element],
+) -> None:
+    mesh_cache: dict[str, str] = {}
+    for elem in body.iter():
+        if elem is not body and elem.tag == "body":
+            _scale_numeric_attr(elem, "pos", factor)
+            continue
+
+        if elem.tag == "geom":
+            _scale_numeric_attr(elem, "pos", factor)
+            _scale_numeric_attr(elem, "size", factor)
+            _scale_numeric_attr(elem, "fromto", factor)
+            mesh_name = elem.get("mesh")
+            if mesh_name:
+                elem.set(
+                    "mesh",
+                    _clone_scaled_mesh(
+                        asset_elem=asset_elem,
+                        mesh_assets=mesh_assets,
+                        mesh_name=mesh_name,
+                        factor=factor,
+                        target_name=target_name,
+                        cache=mesh_cache,
+                    ),
+                )
+            continue
+
+        if elem.tag == "site":
+            _scale_numeric_attr(elem, "pos", factor)
+            _scale_numeric_attr(elem, "size", factor)
+            continue
+
+        if elem.tag == "inertial":
+            _scale_numeric_attr(elem, "pos", factor)
+
+
+def _apply_object_scales_to_scene_xml(xml: str, scale_states: dict[str, float]) -> str:
+    if not scale_states:
+        return xml
+
+    root = _ET.fromstring(xml)
+    asset_elem = root.find("asset")
+    if asset_elem is None:
+        return xml
+    mesh_assets = {
+        mesh.get("name", ""): mesh
+        for mesh in asset_elem.findall("mesh")
+        if mesh.get("name")
+    }
+
+    for target_name, factor in scale_states.items():
+        if abs(factor - 1.0) < 1e-9:
+            continue
+        body = _find_body_for_scale_target(root, target_name)
+        if body is None:
+            logger.warning("Scale target '%s' not found in scene XML — skipping", target_name)
+            continue
+        _scale_body_subtree(
+            body=body,
+            factor=factor,
+            target_name=target_name,
+            asset_elem=asset_elem,
+            mesh_assets=mesh_assets,
+        )
+
+    return _ET.tostring(root, encoding="unicode")
+
+
+def _resolve_scene_xml_paths(xml: str, base_dir: _Path | None) -> str:
+    if base_dir is None:
+        return xml
+
+    root = _ET.fromstring(xml)
+    compiler = root.find("compiler")
+    if compiler is not None:
+        for attr in ("meshdir", "texturedir"):
+            value = compiler.get(attr)
+            if value and not _Path(value).is_absolute():
+                compiler.set(attr, str((base_dir / value).resolve()))
+    return _ET.tostring(root, encoding="unicode")
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +393,7 @@ class SceneRandomizer:
     perturbations: list[PerturbRange] = []
     max_tries: int = 200
     min_clearance_m: float = 0.03  # minimum XY centre-to-centre distance
+    size_perturbations: list[ScalePerturbRange] = []
     # Absolute XY workspace limits — overrideable per task if the table differs.
     table_bounds: tuple[float, float, float, float] = (0.36, 0.82, -0.55, 0.55)
 
@@ -128,18 +402,48 @@ class SceneRandomizer:
         # randomizations don't drift (mj_resetData restores data.qpos but not
         # model.body_pos, so we must remember the original XML values ourselves).
         self._fixed_body_nominals: dict[str, tuple[np.ndarray, np.ndarray]] | None = None
+        self._env_ref = None
+        self._scene_variant = "hybrid"
+        self._base_scene_xml_string: str | None = None
+        self._base_scene_xml_dir: _Path | None = None
+        self._scene_xml_transform_options = None
+        self._current_scale_states: dict[str, float] = {}
+
+    def clone(self) -> "SceneRandomizer":
+        return type(self)()
+
+    def bind_env(self, env: Any, *, scene_variant: str = "hybrid") -> None:
+        self._env_ref = env
+        self._scene_variant = scene_variant
+        self._scene_xml_transform_options = getattr(env, "_scene_xml_transform_options", None)
+        if getattr(env, "_scene_xml_string", None):
+            self._base_scene_xml_string = env._scene_xml_string
+            self._base_scene_xml_dir = getattr(env, "_scene_xml", None)
+            if self._base_scene_xml_dir is not None:
+                self._base_scene_xml_dir = _Path(self._base_scene_xml_dir).parent
+        else:
+            self._base_scene_xml_string = env._scene_xml.read_text()
+            self._base_scene_xml_dir = _Path(env._scene_xml).parent
 
     def randomize(
         self,
         model: Any,
         data: Any,
         seed: int | None = None,
+        request: Any | None = None,
     ) -> RandomizationState:
         """Sample a collision-free placement, apply it to data, and return state."""
-        if not self.perturbations:
-            return RandomizationState(seed=seed or 0, object_states={})
-
         rng = np.random.default_rng(seed)
+        scale_states = self._sample_scale_states(rng)
+        self._current_scale_states = dict(scale_states)
+        if scale_states:
+            self._reload_scene_for_scale_states(scale_states)
+            if self._env_ref is not None:
+                model = self._env_ref.model
+                data = self._env_ref.data
+
+        if not self.perturbations:
+            return RandomizationState(seed=seed or 0, object_states={}, scale_states=scale_states)
 
         # Nominal positions come from the current qpos (caller should have
         # called mj_resetData + mj_forward before invoking randomize).
@@ -164,7 +468,11 @@ class SceneRandomizer:
             if not self._contacts_ok(model, data):
                 continue
 
-            return RandomizationState(seed=seed or 0, object_states=states)
+            return RandomizationState(
+                seed=seed or 0,
+                object_states=states,
+                scale_states=scale_states,
+            )
 
         logger.warning(
             "%s: no collision-free placement found after %d tries — using last sample",
@@ -173,14 +481,71 @@ class SceneRandomizer:
         )
         self._apply_states(model, data, last_states)
         mujoco.mj_forward(model, data)
-        return RandomizationState(seed=seed or 0, object_states=last_states)
+        return RandomizationState(
+            seed=seed or 0,
+            object_states=last_states,
+            scale_states=scale_states,
+        )
 
     def apply(self, model: Any, data: Any, state: RandomizationState) -> None:
         """Restore a previously saved state without sampling (for replay)."""
+        self._current_scale_states = dict(state.scale_states)
+        if state.scale_states:
+            self._reload_scene_for_scale_states(state.scale_states)
+            if self._env_ref is not None:
+                model = self._env_ref.model
+                data = self._env_ref.data
         self._apply_states(model, data, state.object_states)
         mujoco.mj_forward(model, data)
 
     # -- internals -----------------------------------------------------------
+
+    def _get_size_perturbations(self) -> list[ScalePerturbRange]:
+        if self.size_perturbations:
+            return self.size_perturbations
+        return [
+            ScalePerturbRange(p.joint_name)
+            for p in self.perturbations
+            if not p.fixed_body
+        ]
+
+    def _sample_scale_states(self, rng: np.random.Generator) -> dict[str, float]:
+        if self._env_ref is None:
+            return {}
+        return {
+            target.target_name: float(rng.uniform(*target.scale_factor))
+            for target in self._get_size_perturbations()
+        }
+
+    def _scene_xml_for_scale_states(self, scale_states: dict[str, float]) -> str | None:
+        if self._base_scene_xml_string is None:
+            return None
+        xml = self._base_scene_xml_string
+        if scale_states:
+            xml = _apply_object_scales_to_scene_xml(xml, scale_states)
+        return _resolve_scene_xml_paths(xml, self._base_scene_xml_dir)
+
+    def _reload_scene_for_scale_states(self, scale_states: dict[str, float]) -> None:
+        if not scale_states:
+            return
+        if self._env_ref is None:
+            logger.warning(
+                "%s: scale replay requested without a bound env — skipping scale restoration",
+                type(self).__name__,
+            )
+            return
+
+        xml = self._scene_xml_for_scale_states(scale_states)
+        if xml is None:
+            return
+
+        from xdof_sim.scene_variants import apply_scene_variant
+
+        self._env_ref.reload_from_xml(xml)
+        apply_scene_variant(self._env_ref.model, self._scene_variant)
+        mujoco.mj_resetData(self._env_ref.model, self._env_ref.data)
+        self._env_ref._set_qpos_from_state(self._env_ref.get_init_q())
+        mujoco.mj_forward(self._env_ref.model, self._env_ref.data)
 
     def _read_nominals(
         self, model: Any, data: Any
@@ -265,9 +630,7 @@ class SceneRandomizer:
                 rng.uniform(*eff_dy),
                 rng.uniform(*p.delta_z),
             ])
-            # Yaw perturbation applied on top of the nominal orientation.
-            q_yaw = _quat_from_yaw(rng.uniform(*p.delta_yaw))
-            new_quat = _quat_mul(q_yaw, nom_quat)
+            new_quat = _quat_mul(_sample_orientation_delta(p, rng), nom_quat)
 
             states[p.joint_name] = {
                 "pos": new_pos.tolist(),
@@ -322,22 +685,25 @@ class SceneRandomizer:
 
     def _contacts_ok(self, model: Any, data: Any) -> bool:
         """Return False if any two randomized object bodies are in contact."""
-        obj_body_ids: set[int] = set()
+        obj_root_ids: set[int] = set()
         for p in self.perturbations:
             if p.fixed_body:
                 body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, p.joint_name)
                 if body_id >= 0:
-                    obj_body_ids.add(body_id)
+                    obj_root_ids.add(int(model.body_rootid[body_id]))
             else:
                 jnt_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, p.joint_name)
                 if jnt_id >= 0:
-                    obj_body_ids.add(int(model.jnt_bodyid[jnt_id]))
+                    body_id = int(model.jnt_bodyid[jnt_id])
+                    obj_root_ids.add(int(model.body_rootid[body_id]))
 
         for c in range(data.ncon):
             contact = data.contact[c]
             b1 = int(model.geom_bodyid[contact.geom1])
             b2 = int(model.geom_bodyid[contact.geom2])
-            if b1 in obj_body_ids and b2 in obj_body_ids:
+            r1 = int(model.body_rootid[b1])
+            r2 = int(model.body_rootid[b2])
+            if r1 != r2 and r1 in obj_root_ids and r2 in obj_root_ids:
                 return False
         return True
 
@@ -403,37 +769,350 @@ class MarkerRandomizer(SceneRandomizer):
     ]
 
 
-_PLATE_TINT_PALETTE: list[tuple[float, float, float, float]] = [
-    (1.000, 1.000, 1.000, 1.0),  # white (original)
-    (1.000, 0.960, 0.860, 1.0),  # warm cream
-    (0.950, 0.930, 0.900, 1.0),  # off-white / linen
-    (0.850, 0.900, 1.000, 1.0),  # powder blue
-    (0.880, 0.950, 0.880, 1.0),  # sage green
-    (1.000, 0.880, 0.870, 1.0),  # blush pink
-    (0.900, 0.870, 0.950, 1.0),  # lavender
-    (0.870, 0.920, 0.940, 1.0),  # slate grey-blue
-]
-
-
 class DishRackRandomizer(SceneRandomizer):
     min_clearance_m = 0.1
+    rack_plate_margin_m = 0.02
+    plate_plate_margin_m = 0.02
+    max_plate_count = 4
+    _scene_model_cache_size = 16
+    _plate_sample_tries = 64
     perturbations = [
         PerturbRange("dishrack",    delta_x=(-0.10, 0.09), delta_y=(-0.15, 0.15), delta_yaw=(-0.25, 0.25), fixed_body=True),
         PerturbRange("plate_joint", delta_x=(-0.35, 0.25), delta_y=(-0.35, 0.35)),
     ]
 
-    def randomize(self, model: Any, data: Any, seed: int | None = None) -> RandomizationState:
-        state = super().randomize(model, data, seed)
+    def prepare_env(self) -> None:
+        self._current_scale_states = {}
+        self._current_plate_variants = ["current"]
+        self._current_variant_names = {
+            "dish_rack": "current",
+            "plate": "current",
+        }
+        self._current_plate_collision_radii: list[float] = [0.0]
+        self._current_rack_half_extents_xy: tuple[float, float] = (0.0, 0.0)
+        self._compiled_scene_model_cache: OrderedDict[tuple[Any, ...], mujoco.MjModel] = OrderedDict()
+        self._set_active_plate_count(1)
+        self._refresh_collision_metadata()
+        self._reload_variant_scene("current", ["current"], {})
+
+    def randomize(
+        self,
+        model: Any,
+        data: Any,
+        seed: int | None = None,
+        request: Any | None = None,
+    ) -> RandomizationState:
         rng = np.random.default_rng(seed)
-        _apply_mat_color(model, "plate_mat", _PLATE_TINT_PALETTE[rng.integers(len(_PLATE_TINT_PALETTE))])
-        return state
+        reset_request = DishRackResetRequest.from_value(request)
+        dish_rack_variant, plate_variants = self._resolve_variant_selection(rng, reset_request)
+        self._set_active_plate_count(len(plate_variants))
+        should_randomize_scales = (
+            False if reset_request.randomize_scales is None else bool(reset_request.randomize_scales)
+        )
+        scale_states = self._sample_scale_states(rng) if should_randomize_scales else {}
+        self._current_scale_states = dict(scale_states)
+        self._reload_variant_scene(dish_rack_variant, plate_variants, scale_states)
+
+        if self._env_ref is not None:
+            model = self._env_ref.model
+            data = self._env_ref.data
+
+        nominals = self._read_nominals(model, data)
+        last_states: dict[str, dict[str, list[float]]] = {}
+        for _ in range(self.max_tries):
+            states = self._sample_once(nominals, rng)
+            last_states = states
+            if not self._bounds_ok(states):
+                continue
+            if not self._pairwise_ok(states):
+                continue
+            self._apply_states(model, data, states)
+            mujoco.mj_forward(model, data)
+            if not self._contacts_ok(model, data):
+                continue
+            return RandomizationState(
+                seed=seed or 0,
+                object_states=states,
+                scale_states=scale_states,
+                metadata={
+                    "dish_rack_variant": dish_rack_variant,
+                    "plate_variant": plate_variants[0],
+                    "plate_variants": list(plate_variants),
+                    "plate_count": len(plate_variants),
+                },
+            )
+
+        logger.warning(
+            "%s: no collision-free placement found after %d tries — using last sample",
+            type(self).__name__,
+            self.max_tries,
+        )
+        self._apply_states(model, data, last_states)
+        mujoco.mj_forward(model, data)
+        return RandomizationState(
+            seed=seed or 0,
+            object_states=last_states,
+            scale_states=scale_states,
+            metadata={
+                "dish_rack_variant": dish_rack_variant,
+                "plate_variant": plate_variants[0],
+                "plate_variants": list(plate_variants),
+                "plate_count": len(plate_variants),
+            },
+        )
+
+    def apply(self, model: Any, data: Any, state: RandomizationState) -> None:
+        dish_rack_variant = str(state.metadata.get("dish_rack_variant", "current"))
+        raw_plate_variants = state.metadata.get("plate_variants")
+        if isinstance(raw_plate_variants, (list, tuple)) and raw_plate_variants:
+            plate_variants = [str(value) for value in raw_plate_variants]
+        else:
+            plate_variants = [str(state.metadata.get("plate_variant", "current"))]
+        self._current_scale_states = dict(state.scale_states)
+        self._current_plate_variants = list(plate_variants)
+        self._current_variant_names = {
+            "dish_rack": dish_rack_variant,
+            "plate": plate_variants[0],
+        }
+        self._set_active_plate_count(len(plate_variants))
+        self._reload_variant_scene(dish_rack_variant, plate_variants, state.scale_states)
+        if self._env_ref is not None:
+            model = self._env_ref.model
+            data = self._env_ref.data
+        self._apply_states(model, data, state.object_states)
+        mujoco.mj_forward(model, data)
+
+    def _refresh_collision_metadata(self) -> None:
+        plate_radii: list[float] = []
+        for index, plate_variant in enumerate(getattr(self, "_current_plate_variants", ["current"])):
+            plate_half_x, plate_half_y, _, _, _ = _dishrack_compiled_metadata("plate", plate_variant)
+            plate_scale = float(
+                self._current_scale_states.get(
+                    _dishrack_plate_joint_name(index),
+                    self._current_scale_states.get("plate_joint", 1.0),
+                )
+            )
+            plate_radii.append(max(plate_half_x, plate_half_y) * plate_scale)
+
+        rack_variant = getattr(self, "_current_variant_names", {}).get("dish_rack", "current")
+        rack_half_x, rack_half_y, _, _, _ = _dishrack_compiled_metadata("dish_rack", rack_variant)
+        rack_scale = float(self._current_scale_states.get("dishrack", 1.0))
+
+        self._current_plate_collision_radii = plate_radii
+        self._current_rack_half_extents_xy = (
+            rack_half_x * rack_scale,
+            rack_half_y * rack_scale,
+        )
+
+    def _scene_model_cache_key(
+        self,
+        dish_rack_variant: str,
+        plate_variants: list[str],
+        scale_states: dict[str, float],
+    ) -> tuple[Any, ...]:
+        scale_key = tuple(
+            sorted((str(name), round(float(value), 8)) for name, value in scale_states.items())
+        )
+        return (dish_rack_variant, tuple(plate_variants), scale_key)
+
+    def _try_reload_cached_scene_model(self, cache_key: tuple[Any, ...]) -> bool:
+        if self._env_ref is None:
+            return False
+        cache = getattr(self, "_compiled_scene_model_cache", None)
+        if not cache:
+            return False
+        cached_model = cache.get(cache_key)
+        if cached_model is None:
+            return False
+        cache.move_to_end(cache_key)
+        self._env_ref.reload_from_model(cached_model)
+        return True
+
+    def _store_compiled_scene_model(self, cache_key: tuple[Any, ...]) -> None:
+        if self._env_ref is None:
+            return
+        cache = getattr(self, "_compiled_scene_model_cache", None)
+        if cache is None:
+            self._compiled_scene_model_cache = OrderedDict()
+            cache = self._compiled_scene_model_cache
+        cache[cache_key] = copy.deepcopy(self._env_ref.model)
+        cache.move_to_end(cache_key)
+        while len(cache) > self._scene_model_cache_size:
+            cache.popitem(last=False)
+
+    def _resolve_variant_selection(
+        self,
+        rng: np.random.Generator,
+        request: DishRackResetRequest,
+    ) -> tuple[str, list[str]]:
+        randomize_variants = request.randomize_variants
+        if randomize_variants is None:
+            randomize_variants = not any(
+                (
+                    request.plate_variant is not None,
+                    request.dish_rack_variant is not None,
+                    request.cycle_plate != 0,
+                    request.cycle_dish_rack != 0,
+                )
+            )
+
+        plate_count = self._resolve_plate_count(
+            rng=rng,
+            request=request,
+            randomize_variants=randomize_variants,
+        )
+        dish_rack_variant = self._resolve_variant_name(
+            kind="dish_rack",
+            explicit_variant=request.dish_rack_variant,
+            cycle_step=request.cycle_dish_rack,
+            randomize_variants=randomize_variants,
+            rng=rng,
+        )
+        repeated_variant = self._resolve_variant_name(
+            kind="plate",
+            explicit_variant=request.plate_variant,
+            cycle_step=request.cycle_plate,
+            randomize_variants=randomize_variants,
+            rng=rng,
+        )
+        if request.plate_variant is not None or request.cycle_plate != 0 or not randomize_variants:
+            plate_variants = [repeated_variant] * plate_count
+        else:
+            plate_variants = [
+                _dishrack_sample_variant_name("plate", rng)
+                for _ in range(plate_count)
+            ]
+        return dish_rack_variant, plate_variants
+
+    def _resolve_plate_count(
+        self,
+        *,
+        rng: np.random.Generator,
+        request: DishRackResetRequest,
+        randomize_variants: bool,
+    ) -> int:
+        if request.plate_count is not None:
+            plate_count = int(request.plate_count)
+        elif request.plate_variant is not None or request.cycle_plate != 0 or not randomize_variants:
+            plate_count = len(getattr(self, "_current_plate_variants", ["current"]))
+        else:
+            plate_count = int(rng.integers(1, self.max_plate_count + 1))
+
+        if not 1 <= plate_count <= self.max_plate_count:
+            raise ValueError(
+                f"DishRack plate_count must be in [1, {self.max_plate_count}], got {plate_count}"
+            )
+        return plate_count
+
+    def _set_active_plate_count(self, plate_count: int) -> None:
+        if not 1 <= plate_count <= self.max_plate_count:
+            raise ValueError(
+                f"DishRack plate_count must be in [1, {self.max_plate_count}], got {plate_count}"
+            )
+        self.perturbations = [
+            PerturbRange(
+                "dishrack",
+                delta_x=(-0.10, 0.09),
+                delta_y=(-0.15, 0.15),
+                delta_yaw=(-0.25, 0.25),
+                fixed_body=True,
+            ),
+            *[
+                PerturbRange(
+                    _dishrack_plate_joint_name(index),
+                    delta_x=(-0.35, 0.25),
+                    delta_y=(-0.35, 0.35),
+                )
+                for index in range(plate_count)
+            ],
+        ]
+
+    def _resolve_variant_name(
+        self,
+        *,
+        kind: str,
+        explicit_variant: str | None,
+        cycle_step: int,
+        randomize_variants: bool,
+        rng: np.random.Generator,
+    ) -> str:
+        variants = _dishrack_variant_names(kind)
+        current_variant = getattr(self, "_current_variant_names", {}).get(kind, "current")
+        if current_variant not in variants:
+            current_variant = variants[0]
+
+        if explicit_variant is not None:
+            if explicit_variant not in variants:
+                raise ValueError(
+                    f"Unknown {kind} variant {explicit_variant!r}. Available: {', '.join(variants)}"
+                )
+            return explicit_variant
+
+        if cycle_step:
+            current_index = variants.index(current_variant)
+            return variants[(current_index + cycle_step) % len(variants)]
+
+        if not randomize_variants:
+            return current_variant
+
+        return _dishrack_sample_variant_name(kind, rng)
 
     def _sample_once(
         self,
         nominals: dict[str, tuple[np.ndarray, np.ndarray]],
         rng: np.random.Generator,
     ) -> dict[str, dict[str, list[float]]]:
-        states = super()._sample_once(nominals, rng)
+        x_min, x_max, y_min, y_max = self.table_bounds
+        perturbations_by_name = {p.joint_name: p for p in self.perturbations}
+        states: dict[str, dict[str, list[float]]] = {}
+
+        def sample_state(p: PerturbRange) -> dict[str, list[float]]:
+            nom_pos, nom_quat = nominals[p.joint_name]
+            eff_dx = (
+                max(p.delta_x[0], x_min - nom_pos[0]),
+                min(p.delta_x[1], x_max - nom_pos[0]),
+            )
+            eff_dy = (
+                max(p.delta_y[0], y_min - nom_pos[1]),
+                min(p.delta_y[1], y_max - nom_pos[1]),
+            )
+            if eff_dx[0] > eff_dx[1]:
+                eff_dx = (0.0, 0.0)
+            if eff_dy[0] > eff_dy[1]:
+                eff_dy = (0.0, 0.0)
+
+            new_pos = nom_pos + np.array([
+                rng.uniform(*eff_dx),
+                rng.uniform(*eff_dy),
+                rng.uniform(*p.delta_z),
+            ])
+            new_quat = _quat_mul(_sample_orientation_delta(p, rng), nom_quat)
+            return {
+                "pos": new_pos.tolist(),
+                "quat": new_quat.tolist(),
+            }
+
+        rack_perturb = perturbations_by_name.get("dishrack")
+        if rack_perturb is not None and "dishrack" in nominals:
+            states["dishrack"] = sample_state(rack_perturb)
+
+        for index, _plate_variant in enumerate(getattr(self, "_current_plate_variants", ["current"])):
+            joint_name = _dishrack_plate_joint_name(index)
+            perturb = perturbations_by_name.get(joint_name)
+            if perturb is None or joint_name not in nominals:
+                continue
+
+            last_candidate: dict[str, list[float]] | None = None
+            for _ in range(self._plate_sample_tries):
+                candidate = sample_state(perturb)
+                trial_states = dict(states)
+                trial_states[joint_name] = candidate
+                last_candidate = candidate
+                if self._pairwise_ok(trial_states):
+                    break
+            if last_candidate is not None:
+                states[joint_name] = last_candidate
+
         # 50% chance: reflect the scene about the XZ plane (negate all Y coords)
         # and rotate the rack 180 about Z so it faces the opposite direction.
         if rng.integers(2) == 1:
@@ -443,6 +1122,115 @@ class DishRackRandomizer(SceneRandomizer):
                 if key == "dishrack":
                     s["quat"] = _quat_mul(q_180, np.array(s["quat"])).tolist()
         return states
+
+    def _pairwise_ok(self, states: dict[str, dict[str, list[float]]]) -> bool:
+        rack_state = states.get("dishrack")
+        plate_entries: list[tuple[np.ndarray, float]] = []
+        plate_radii = getattr(self, "_current_plate_collision_radii", [])
+        for index, _plate_variant in enumerate(getattr(self, "_current_plate_variants", ["current"])):
+            joint_name = _dishrack_plate_joint_name(index)
+            plate_state = states.get(joint_name)
+            if plate_state is None:
+                continue
+            if index < len(plate_radii):
+                plate_radius = plate_radii[index]
+            else:
+                plate_half_x, plate_half_y, _, _, _ = _dishrack_compiled_metadata("plate", _plate_variant)
+                plate_scale = float(
+                    self._current_scale_states.get(joint_name, self._current_scale_states.get("plate_joint", 1.0))
+                )
+                plate_radius = max(plate_half_x, plate_half_y) * plate_scale
+            plate_entries.append(
+                (
+                    np.asarray(plate_state["pos"][:2], dtype=np.float64),
+                    plate_radius,
+                )
+            )
+
+        for i in range(len(plate_entries)):
+            pos_i, radius_i = plate_entries[i]
+            for j in range(i + 1, len(plate_entries)):
+                pos_j, radius_j = plate_entries[j]
+                min_dist = radius_i + radius_j + self.plate_plate_margin_m
+                if np.linalg.norm(pos_i - pos_j) < min_dist:
+                    return False
+
+        if rack_state is None:
+            return True
+
+        rack_half_x, rack_half_y = getattr(self, "_current_rack_half_extents_xy", (0.0, 0.0))
+        rack_pos_xy = np.asarray(rack_state["pos"][:2], dtype=np.float64)
+        rack_yaw = _yaw_from_quat(np.asarray(rack_state["quat"], dtype=np.float64))
+        c = float(np.cos(rack_yaw))
+        s = float(np.sin(rack_yaw))
+        for plate_pos_xy, plate_radius in plate_entries:
+            rel_xy = plate_pos_xy - rack_pos_xy
+            rack_local_xy = np.array(
+                [c * rel_xy[0] + s * rel_xy[1], -s * rel_xy[0] + c * rel_xy[1]],
+                dtype=np.float64,
+            )
+            exclude_x = rack_half_x + plate_radius + self.rack_plate_margin_m
+            exclude_y = rack_half_y + plate_radius + self.rack_plate_margin_m
+            if abs(rack_local_xy[0]) < exclude_x and abs(rack_local_xy[1]) < exclude_y:
+                return False
+        return True
+
+    def _reload_variant_scene(
+        self,
+        dish_rack_variant: str,
+        plate_variants: str | list[str] | tuple[str, ...],
+        scale_states: dict[str, float],
+    ) -> None:
+        if self._env_ref is None:
+            raise RuntimeError("DishRackRandomizer requires a bound env before scene reload")
+
+        normalized_plate_variants = _dishrack_normalize_plate_variants(plate_variants)
+        self._set_active_plate_count(len(normalized_plate_variants))
+        scene_cache_key = self._scene_model_cache_key(
+            dish_rack_variant,
+            normalized_plate_variants,
+            scale_states,
+        )
+
+        base_scene_xml = self._base_scene_xml_string
+        base_scene_dir = self._base_scene_xml_dir
+        if not self._try_reload_cached_scene_model(scene_cache_key):
+            if (
+                base_scene_xml is None
+                or "<!-- TASK_ASSETS_PLACEHOLDER -->" not in base_scene_xml
+                or "<!-- TASK_BODY_PLACEHOLDER -->" not in base_scene_xml
+            ):
+                base_scene_xml = _DISHRACK_BASE_SCENE_XML.read_text()
+                base_scene_dir = _DISHRACK_BASE_SCENE_XML.parent
+
+            xml = _build_dishrack_scene_xml(
+                dish_rack_variant=dish_rack_variant,
+                plate_variants=normalized_plate_variants,
+                scale_states=scale_states,
+                base_scene_xml=base_scene_xml,
+                base_scene_dir=base_scene_dir,
+            )
+            if self._scene_xml_transform_options is not None:
+                from xdof_sim.scene_xml import transform_scene_xml
+
+                xml, _ = transform_scene_xml(xml, options=self._scene_xml_transform_options)
+
+            self._env_ref.reload_from_xml(xml)
+            self._store_compiled_scene_model(scene_cache_key)
+
+        from xdof_sim.scene_variants import apply_scene_variant
+
+        self._current_plate_variants = list(normalized_plate_variants)
+        self._current_variant_names = {
+            "dish_rack": dish_rack_variant,
+            "plate": normalized_plate_variants[0],
+        }
+        self._refresh_collision_metadata()
+        apply_scene_variant(self._env_ref.model, self._scene_variant)
+        mujoco.mj_resetData(self._env_ref.model, self._env_ref.data)
+        self._env_ref._set_qpos_from_state(self._env_ref.get_init_q())
+        mujoco.mj_forward(self._env_ref.model, self._env_ref.data)
+        self._fixed_body_nominals = None
 
 
 class BlocksRandomizer(SceneRandomizer):
@@ -470,12 +1258,19 @@ class MugTreeRandomizer(SceneRandomizer):
         PerturbRange("mug_2_jnt", delta_x=(-0.10, 0.10), delta_y=(-0.3, 0.3)),
     ]
 
-    def randomize(self, model: Any, data: Any, seed: int | None = None) -> RandomizationState:
-        state = super().randomize(model, data, seed)
+    def randomize(
+        self,
+        model: Any,
+        data: Any,
+        seed: int | None = None,
+        request: Any | None = None,
+    ) -> RandomizationState:
+        state = super().randomize(model, data, seed, request=request)
         rng = np.random.default_rng(seed)
+        target_model = self._env_ref.model if self._env_ref is not None else model
         if rng.random() < _COLOR_RANDOMIZE_PROB:
             for mat_name in ("mug_1_color", "mug_2_color"):
-                _apply_mat_color(model, mat_name, _MUG_COLOR_PALETTE[rng.integers(len(_MUG_COLOR_PALETTE))])
+                _apply_mat_color(target_model, mat_name, _MUG_COLOR_PALETTE[rng.integers(len(_MUG_COLOR_PALETTE))])
         return state
 
 
@@ -540,12 +1335,19 @@ class MugFlipRandomizer(SceneRandomizer):
 
         return states
 
-    def randomize(self, model: Any, data: Any, seed: int | None = None) -> RandomizationState:
-        state = super().randomize(model, data, seed)
+    def randomize(
+        self,
+        model: Any,
+        data: Any,
+        seed: int | None = None,
+        request: Any | None = None,
+    ) -> RandomizationState:
+        state = super().randomize(model, data, seed, request=request)
         rng = np.random.default_rng(seed)
+        target_model = self._env_ref.model if self._env_ref is not None else model
         if rng.random() < _COLOR_RANDOMIZE_PROB:
             for mat_name in ("mug_1_color", "mug_2_color"):
-                _apply_mat_color(model, mat_name, _MUG_COLOR_PALETTE[rng.integers(len(_MUG_COLOR_PALETTE))])
+                _apply_mat_color(target_model, mat_name, _MUG_COLOR_PALETTE[rng.integers(len(_MUG_COLOR_PALETTE))])
         return state
 
 
@@ -564,6 +1366,11 @@ class PourRandomizer(SceneRandomizer):
         PerturbRange("cup_1_jnt", delta_x=(-0.10, 0.10), delta_y=(-0.20, 0.20)),
     ]
     _bead_joints = [f"bead_{i}_jnt" for i in range(1, 11)]
+    size_perturbations = [
+        ScalePerturbRange("mug_1_jnt"),
+        ScalePerturbRange("cup_1_jnt"),
+        *[ScalePerturbRange(f"bead_{i}_jnt") for i in range(1, 11)],
+    ]
 
     def _read_nominals(self, model: Any, data: Any) -> dict[str, tuple[np.ndarray, np.ndarray]]:
         nominals = super()._read_nominals(model, data)
@@ -629,23 +1436,20 @@ class PourRandomizer(SceneRandomizer):
 
         return states
 
-    def randomize(self, model: Any, data: Any, seed: int | None = None) -> RandomizationState:
-        state = super().randomize(model, data, seed)
+    def randomize(
+        self,
+        model: Any,
+        data: Any,
+        seed: int | None = None,
+        request: Any | None = None,
+    ) -> RandomizationState:
+        state = super().randomize(model, data, seed, request=request)
         rng = np.random.default_rng(seed)
+        target_model = self._env_ref.model if self._env_ref is not None else model
         if rng.random() < _COLOR_RANDOMIZE_PROB:
             for mat_name in ("mug_1_color", "cup_body_color"):
-                _apply_mat_color(model, mat_name, _MUG_COLOR_PALETTE[rng.integers(len(_MUG_COLOR_PALETTE))])
+                _apply_mat_color(target_model, mat_name, _MUG_COLOR_PALETTE[rng.integers(len(_MUG_COLOR_PALETTE))])
         return state
-
-
-class SpellingRandomizer(SceneRandomizer):
-    """Small per-block perturbation for the 26-letter block spelling scene."""
-
-    min_clearance_m = 0.025
-    perturbations = [
-        PerturbRange(f"block_{letter}_jnt", delta_x=(-0.08, 0.08), delta_y=(-0.08, 0.08))
-        for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    ]
 
 
 class DrawerRandomizer(SceneRandomizer):
@@ -699,6 +1503,151 @@ class BallSortingRandomizer(SceneRandomizer):
         PerturbRange("cylinder-2", delta_x=(-0.5, 0.5), delta_y=(-0.5, 0.5)),
         PerturbRange("cylinder-3", delta_x=(-0.5, 0.5), delta_y=(-0.5, 0.5)),
     ]
+
+
+class SweepRandomizer(SceneRandomizer):
+    max_tries = 400
+    min_clearance_m = 0.015
+    perturbations = [
+        PerturbRange("brush_jnt", delta_x=(-0.08, 0.10), delta_y=(-0.14, 0.12), delta_yaw=(-0.6, 0.6)),
+        PerturbRange("bin_joint", delta_x=(-0.08, 0.05), delta_y=(-0.20, 0.20), delta_yaw=(-0.5, 0.5)),
+        PerturbRange("dustpan_jnt", delta_x=(-0.08, 0.04), delta_y=(-0.12, 0.16), delta_yaw=(-0.6, 0.6)),
+        *[
+            PerturbRange(
+                f"trash_{i}_jnt",
+                delta_x=(-0.015, 0.015),
+                delta_y=(-0.015, 0.015),
+                delta_roll=(-np.pi, np.pi),
+                delta_pitch=(-np.pi, np.pi),
+                delta_yaw=(-np.pi, np.pi),
+            )
+            for i in range(1, 7)
+        ],
+    ]
+    size_perturbations = [
+        ScalePerturbRange("brush_jnt"),
+        ScalePerturbRange("bin_joint"),
+        ScalePerturbRange("dustpan_jnt"),
+        *[ScalePerturbRange(f"trash_{i}_jnt", scale_factor=(0.85, 1.15)) for i in range(1, 7)],
+    ]
+    _trash_joints = [f"trash_{i}_jnt" for i in range(1, 7)]
+    _tool_joints = ("brush_jnt", "bin_joint", "dustpan_jnt")
+    _trash_cluster_shift_x = (-0.03, 0.07)
+    _trash_cluster_shift_y = (-0.18, 0.18)
+    _tool_sample_tries = 32
+    _trash_sample_tries = 48
+    _trash_clearance_m = 0.04
+    _trash_tool_clearance_m = 0.065
+    _brush_trash_clearance_m = 0.09
+    _tool_tool_clearance_m = 0.08
+
+    def _clearance_for_pair(self, name_a: str, name_b: str) -> float:
+        scale_a = float(self._current_scale_states.get(name_a, 1.0))
+        scale_b = float(self._current_scale_states.get(name_b, 1.0))
+        scale = max(scale_a, scale_b)
+        if name_a in self._trash_joints and name_b in self._trash_joints:
+            return self._trash_clearance_m * scale
+        if name_a in self._tool_joints and name_b in self._tool_joints:
+            return self._tool_tool_clearance_m * scale
+        if "brush_jnt" in (name_a, name_b):
+            return self._brush_trash_clearance_m * scale
+        return self._trash_tool_clearance_m * scale
+
+    def _sample_once(
+        self,
+        nominals: dict[str, tuple[np.ndarray, np.ndarray]],
+        rng: np.random.Generator,
+    ) -> dict[str, dict[str, list[float]]]:
+        x_min, x_max, y_min, y_max = self.table_bounds
+        states: dict[str, dict[str, list[float]]] = {}
+
+        def sample_from_range(
+            perturbation: PerturbRange,
+            *,
+            extra_xy: tuple[float, float] | None = None,
+        ) -> dict[str, list[float]]:
+            nom_pos, nom_quat = nominals[perturbation.joint_name]
+            eff_dx = (
+                max(perturbation.delta_x[0], x_min - nom_pos[0]),
+                min(perturbation.delta_x[1], x_max - nom_pos[0]),
+            )
+            eff_dy = (
+                max(perturbation.delta_y[0], y_min - nom_pos[1]),
+                min(perturbation.delta_y[1], y_max - nom_pos[1]),
+            )
+            if eff_dx[0] > eff_dx[1]:
+                eff_dx = (0.0, 0.0)
+            if eff_dy[0] > eff_dy[1]:
+                eff_dy = (0.0, 0.0)
+            dx = rng.uniform(*eff_dx)
+            dy = rng.uniform(*eff_dy)
+            if extra_xy is not None:
+                dx += extra_xy[0]
+                dy += extra_xy[1]
+            new_pos = nom_pos + np.array([dx, dy, rng.uniform(*perturbation.delta_z)])
+            new_pos[0] = np.clip(new_pos[0], x_min, x_max)
+            new_pos[1] = np.clip(new_pos[1], y_min, y_max)
+            new_quat = _quat_mul(_sample_orientation_delta(perturbation, rng), nom_quat)
+            return {"pos": new_pos.tolist(), "quat": new_quat.tolist()}
+
+        perturb_by_name = {p.joint_name: p for p in self.perturbations}
+
+        placed_xy: dict[str, np.ndarray] = {}
+
+        def sample_clear_placement(
+            joint_name: str,
+            *,
+            extra_xy: tuple[float, float] | None = None,
+            tries: int,
+        ) -> dict[str, list[float]]:
+            perturbation = perturb_by_name[joint_name]
+            last_state: dict[str, list[float]] | None = None
+            for _ in range(tries):
+                candidate = sample_from_range(perturbation, extra_xy=extra_xy)
+                candidate_xy = np.asarray(candidate["pos"][:2], dtype=np.float64)
+                if all(
+                    np.linalg.norm(candidate_xy - other_xy) >= self._clearance_for_pair(joint_name, other_name)
+                    for other_name, other_xy in placed_xy.items()
+                ):
+                    return candidate
+                last_state = candidate
+            assert last_state is not None
+            return last_state
+
+        for joint_name in self._tool_joints:
+            if joint_name not in nominals:
+                continue
+            state = sample_clear_placement(joint_name, tries=self._tool_sample_tries)
+            states[joint_name] = state
+            placed_xy[joint_name] = np.asarray(state["pos"][:2], dtype=np.float64)
+
+        cluster_dx = float(rng.uniform(*self._trash_cluster_shift_x))
+        cluster_dy = float(rng.uniform(*self._trash_cluster_shift_y))
+        for joint_name in self._trash_joints:
+            if joint_name not in nominals:
+                continue
+            state = sample_clear_placement(
+                extra_xy=(cluster_dx, cluster_dy),
+                joint_name=joint_name,
+                tries=self._trash_sample_tries,
+            )
+            states[joint_name] = state
+            placed_xy[joint_name] = np.asarray(state["pos"][:2], dtype=np.float64)
+
+        return states
+
+    def _pairwise_ok(self, states: dict[str, dict[str, list[float]]]) -> bool:
+        if len(states) < 2:
+            return True
+
+        names = list(states.keys())
+        positions = {name: np.asarray(state["pos"][:2], dtype=np.float64) for name, state in states.items()}
+        for i, name_a in enumerate(names):
+            for name_b in names[i + 1:]:
+                clearance = self._clearance_for_pair(name_a, name_b)
+                if np.linalg.norm(positions[name_a] - positions[name_b]) < clearance:
+                    return False
+        return True
 
 
 _CHESS_PIECE_JOINTS = [
@@ -840,9 +1789,39 @@ Chess2Randomizer = ChessRandomizer
 # ---------------------------------------------------------------------------
 
 import xml.etree.ElementTree as _ET
+from functools import lru_cache as _lru_cache
 from pathlib import Path as _Path
 
 _MODELS_DIR = _Path(__file__).parent / "models"
+_DISHRACK_BASE_SCENE_XML = _MODELS_DIR / "yam_dishrack_base.xml"
+_DISHRACK_CURRENT_SOURCE_SCENE_XML = _MODELS_DIR / "yam_dishwasher_scene.xml"
+_DISHRACK_TASK_ASSET_ROOT = _MODELS_DIR / "assets" / "task_dishrack"
+_DISHRACK_VARIANT_ROOTS: dict[str, _Path] = {
+    "plate": _DISHRACK_TASK_ASSET_ROOT / "plate",
+    "dish_rack": _DISHRACK_TASK_ASSET_ROOT / "dish_rack",
+}
+_DISHRACK_CURRENT_BODY_NAMES: dict[str, str] = {
+    "dish_rack": "dishrack",
+    "plate": "plate",
+}
+_DISHRACK_CURRENT_ASSET_PREFIXES: dict[str, str] = {
+    "dish_rack": "rack_",
+    "plate": "plate_",
+}
+_DISHRACK_RACK_WRAPPER_POSITIONS: dict[str, tuple[float, float, float]] = {
+    "current": (0.62, -0.24, 0.75),
+    "variant": (0.62, -0.24, 0.75),
+}
+_DISHRACK_PLATE_WRAPPER_XY: tuple[tuple[float, float], ...] = (
+    (0.50, 0.20),
+    (0.72, 0.20),
+    (0.50, 0.44),
+    (0.72, 0.44),
+)
+_DISHRACK_PLATE_WRAPPER_Z: dict[str, float] = {
+    "current": 0.76,
+    "variant": 0.75,
+}
 _BASE_SCENE_XML = _MODELS_DIR / "yam_inhand_transfer_base.xml"
 _LIGHTWHEEL_BASE = _MODELS_DIR / "assets_robocasa" / "objects_lightwheel" / "lightwheel"
 _OBJAVERSE_BASE = _MODELS_DIR / "assets_robocasa" / "objaverse" / "objaverse"
@@ -864,6 +1843,610 @@ _X_MIN, _X_MAX = 0.42, 0.78
 _Y_LEFT_MIN, _Y_LEFT_MAX = 0.10, 0.40
 _Y_RIGHT_MIN, _Y_RIGHT_MAX = -0.40, -0.10
 _OBJ_Z = 0.82
+
+
+@_lru_cache(maxsize=None)
+def _dishrack_variant_names(kind: str) -> list[str]:
+    root = _DISHRACK_VARIANT_ROOTS[kind]
+    variants = [
+        path.name
+        for path in root.iterdir()
+        if path.is_dir() and (path / "model.xml").exists()
+    ]
+    variants.sort(key=lambda name: (name != "current", name))
+    return variants
+
+
+def _dishrack_variant_dir(kind: str, variant_name: str) -> _Path:
+    path = _DISHRACK_VARIANT_ROOTS[kind] / variant_name
+    if not (path / "model.xml").exists():
+        raise FileNotFoundError(f"Missing {kind} variant model.xml: {path}")
+    return path
+
+
+def _dishrack_sample_variant_name(kind: str, rng: np.random.Generator) -> str:
+    variants = _dishrack_variant_names(kind)
+    return variants[int(rng.integers(0, len(variants)))]
+
+
+def _dishrack_plate_body_name(index: int) -> str:
+    if index == 0:
+        return "plate"
+    return f"plate_{index}"
+
+
+def _dishrack_plate_joint_name(index: int) -> str:
+    if index == 0:
+        return "plate_joint"
+    return f"plate_joint_{index}"
+
+
+def _dishrack_instance_prefix(kind: str, variant_name: str, instance_index: int) -> str:
+    return f"{kind}_{instance_index}_{variant_name}"
+
+
+def _dishrack_normalize_plate_variants(
+    plate_variants: str | list[str] | tuple[str, ...],
+) -> list[str]:
+    if isinstance(plate_variants, str):
+        normalized = [plate_variants]
+    else:
+        normalized = [str(value) for value in plate_variants]
+
+    if not 1 <= len(normalized) <= DishRackRandomizer.max_plate_count:
+        raise ValueError(
+            "DishRack requires between 1 and "
+            f"{DishRackRandomizer.max_plate_count} plate variants, got {len(normalized)}"
+        )
+
+    available = set(_dishrack_variant_names("plate"))
+    invalid = [name for name in normalized if name not in available]
+    if invalid:
+        raise ValueError(
+            f"Unknown plate variants {invalid}. Available: {', '.join(sorted(available))}"
+        )
+    return normalized
+
+
+def _dishrack_current_scene_root() -> _ET.Element:
+    return _ET.parse(str(_DISHRACK_CURRENT_SOURCE_SCENE_XML)).getroot()
+
+
+def _dishrack_collect_current_assets(scene_root: _ET.Element, *, kind: str) -> list[_ET.Element]:
+    asset_root = scene_root.find("asset")
+    if asset_root is None:
+        raise ValueError("Current dishrack source scene is missing <asset>")
+
+    asset_prefix = _DISHRACK_CURRENT_ASSET_PREFIXES[kind]
+    texture_name = f"{asset_prefix}tex"
+    material_name = f"{asset_prefix}mat"
+    visual_name = f"{asset_prefix}visual"
+    collision_prefix = f"{asset_prefix}col_"
+    current_dir = _dishrack_variant_dir(kind, "current")
+
+    selected: list[_ET.Element] = []
+    for asset_child in list(asset_root):
+        name = asset_child.get("name", "")
+        if asset_child.tag == "texture" and name == texture_name:
+            selected.append(copy.deepcopy(asset_child))
+            continue
+        if asset_child.tag == "material" and name == material_name:
+            selected.append(copy.deepcopy(asset_child))
+            continue
+        if asset_child.tag == "mesh" and (name == visual_name or name.startswith(collision_prefix)):
+            selected.append(copy.deepcopy(asset_child))
+
+    if not selected:
+        raise ValueError(f"Missing current assets for {kind} in {_DISHRACK_CURRENT_SOURCE_SCENE_XML}")
+
+    for asset_child in selected:
+        file_attr = asset_child.get("file")
+        if file_attr:
+            asset_child.set("file", str((current_dir / _Path(file_attr).name).resolve()))
+    return selected
+
+
+def _dishrack_current_body(scene_root: _ET.Element, *, kind: str) -> _ET.Element:
+    worldbody = scene_root.find("worldbody")
+    if worldbody is None:
+        raise ValueError("Current dishrack source scene is missing <worldbody>")
+    body_name = _DISHRACK_CURRENT_BODY_NAMES[kind]
+    body = worldbody.find(f".//body[@name='{body_name}']")
+    if body is None:
+        raise ValueError(f"Missing current body '{body_name}' in {_DISHRACK_CURRENT_SOURCE_SCENE_XML}")
+    return copy.deepcopy(body)
+
+
+def _dishrack_build_current_object_block(
+    *,
+    kind: str,
+    scale_factor: float,
+    object_name: str,
+    joint_name: str | None,
+    instance_index: int,
+    preserve_asset_names: bool,
+) -> tuple[list[_ET.Element], _ET.Element]:
+    scene_root = _dishrack_current_scene_root()
+    current_assets = _dishrack_collect_current_assets(scene_root, kind=kind)
+    name_prefix = _dishrack_instance_prefix(kind, "current", instance_index)
+    mesh_map: dict[str, str] = {}
+    texture_map: dict[str, str] = {}
+    material_map: dict[str, str] = {}
+
+    for asset_child in current_assets:
+        local_name = _dishrack_asset_local_name(asset_child)
+        if asset_child.tag == "mesh":
+            mesh_map[local_name] = (
+                local_name if preserve_asset_names else _dishrack_prefixed_name(name_prefix, local_name)
+            )
+            continue
+        if asset_child.tag == "texture":
+            texture_map[local_name] = (
+                local_name if preserve_asset_names else _dishrack_prefixed_name(name_prefix, local_name)
+            )
+            continue
+        if asset_child.tag == "material":
+            material_map[local_name] = (
+                local_name if preserve_asset_names else _dishrack_prefixed_name(name_prefix, local_name)
+            )
+
+    temp_asset = _ET.Element("asset")
+    for asset_child in current_assets:
+        cloned = copy.deepcopy(asset_child)
+        local_name = _dishrack_asset_local_name(asset_child)
+        if asset_child.tag == "mesh":
+            cloned.set("name", mesh_map[local_name])
+        elif asset_child.tag == "texture":
+            cloned.set("name", texture_map[local_name])
+        elif asset_child.tag == "material":
+            cloned.set("name", material_map[local_name])
+            texture_name = asset_child.get("texture")
+            if texture_name and texture_name in texture_map:
+                cloned.set("texture", texture_map[texture_name])
+        temp_asset.append(cloned)
+
+    cloned_body = _dishrack_current_body(scene_root, kind=kind)
+    _dishrack_remove_dynamic_joints(cloned_body)
+    _dishrack_prefix_body_names(cloned_body, name_prefix)
+    _dishrack_rewrite_asset_refs(
+        cloned_body,
+        mesh_map=mesh_map,
+        material_map=material_map,
+    )
+    _dishrack_normalize_geoms(cloned_body, kind=kind)
+    cloned_body.set("pos", "0 0 0")
+
+    if abs(scale_factor - 1.0) > 1e-9:
+        mesh_assets = {
+            mesh.get("name", ""): mesh
+            for mesh in temp_asset.findall("mesh")
+            if mesh.get("name")
+        }
+        _scale_body_subtree(
+            body=cloned_body,
+            factor=scale_factor,
+            target_name=joint_name or object_name,
+            asset_elem=temp_asset,
+            mesh_assets=mesh_assets,
+        )
+
+    wrapper = _ET.Element(
+        "body",
+        name=object_name,
+        pos=_format_float_list(list(_dishrack_wrapper_position(kind, "current", instance_index))),
+    )
+    if joint_name is not None:
+        _ET.SubElement(wrapper, "freejoint", name=joint_name)
+    wrapper.append(cloned_body)
+    return list(temp_asset), wrapper
+
+
+def _dishrack_asset_local_name(elem: _ET.Element) -> str:
+    name = elem.get("name")
+    if name:
+        return name
+    file_attr = elem.get("file", "")
+    stem = _Path(file_attr).stem
+    if stem:
+        return stem
+    raise ValueError(f"Unable to infer asset name for element: {elem.tag}")
+
+
+def _dishrack_prefixed_name(prefix: str, local_name: str) -> str:
+    return f"{prefix}_{local_name.replace('.', '_')}"
+
+
+def _dishrack_find_object_body(root: _ET.Element) -> _ET.Element:
+    worldbody = root.find("worldbody")
+    if worldbody is None:
+        raise ValueError("Variant model.xml is missing <worldbody>")
+
+    for candidate_name in ("object", "model"):
+        body = worldbody.find(f".//body[@name='{candidate_name}']")
+        if body is not None:
+            return body
+
+    for body in worldbody.iter("body"):
+        if any(child.tag == "geom" for child in body.iter()):
+            return body
+    raise ValueError("Variant model.xml does not contain a body with geoms")
+
+
+def _dishrack_find_bbox_geom(body: _ET.Element) -> _ET.Element | None:
+    for geom in body.iter("geom"):
+        if geom.get("name") == "reg_bbox":
+            return geom
+    return None
+
+
+def _dishrack_bbox_anchor_offset(body: _ET.Element) -> np.ndarray:
+    bbox = _dishrack_find_bbox_geom(body)
+    if bbox is None:
+        return np.zeros(3, dtype=np.float64)
+    pos = np.asarray(_parse_float_list(bbox.get("pos", "0 0 0")), dtype=np.float64)
+    size = np.asarray(_parse_float_list(bbox.get("size", "0 0 0")), dtype=np.float64)
+    return np.array([-pos[0], -pos[1], -(pos[2] - size[2])], dtype=np.float64)
+
+
+def _dishrack_geom_world_bounds(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    geom_id: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    geom_type = int(model.geom_type[geom_id])
+    pos = np.asarray(data.geom_xpos[geom_id], dtype=np.float64)
+    rot = np.asarray(data.geom_xmat[geom_id], dtype=np.float64).reshape(3, 3)
+
+    if geom_type == mujoco.mjtGeom.mjGEOM_BOX:
+        size = np.asarray(model.geom_size[geom_id][:3], dtype=np.float64)
+        half = np.abs(rot) @ size
+        return pos - half, pos + half
+
+    if geom_type == mujoco.mjtGeom.mjGEOM_SPHERE:
+        radius = float(model.geom_size[geom_id][0])
+        half = np.full(3, radius, dtype=np.float64)
+        return pos - half, pos + half
+
+    if geom_type == mujoco.mjtGeom.mjGEOM_ELLIPSOID:
+        size = np.asarray(model.geom_size[geom_id][:3], dtype=np.float64)
+        half = np.abs(rot) @ size
+        return pos - half, pos + half
+
+    if geom_type == mujoco.mjtGeom.mjGEOM_CYLINDER:
+        radius = float(model.geom_size[geom_id][0])
+        half_len = float(model.geom_size[geom_id][1])
+        half = np.abs(rot) @ np.array([radius, radius, half_len], dtype=np.float64)
+        return pos - half, pos + half
+
+    if geom_type == mujoco.mjtGeom.mjGEOM_CAPSULE:
+        radius = float(model.geom_size[geom_id][0])
+        half_len = float(model.geom_size[geom_id][1]) + radius
+        half = np.abs(rot) @ np.array([radius, radius, half_len], dtype=np.float64)
+        return pos - half, pos + half
+
+    if geom_type == mujoco.mjtGeom.mjGEOM_MESH:
+        mesh_id = int(model.geom_dataid[geom_id])
+        if mesh_id < 0:
+            raise ValueError(f"Mesh geom {geom_id} is missing compiled mesh data")
+        start = int(model.mesh_vertadr[mesh_id])
+        count = int(model.mesh_vertnum[mesh_id])
+        verts = np.asarray(model.mesh_vert[start : start + count], dtype=np.float64)
+        world = verts @ rot.T + pos
+        return world.min(axis=0), world.max(axis=0)
+
+    radius = float(model.geom_rbound[geom_id])
+    half = np.full(3, radius, dtype=np.float64)
+    return pos - half, pos + half
+
+
+def _dishrack_compiled_model_bounds(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+) -> tuple[np.ndarray, np.ndarray]:
+    mins: list[np.ndarray] = []
+    maxs: list[np.ndarray] = []
+    for geom_id in range(model.ngeom):
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id) or ""
+        if name.startswith("reg_"):
+            continue
+        lower, upper = _dishrack_geom_world_bounds(model, data, geom_id)
+        mins.append(lower)
+        maxs.append(upper)
+    if not mins:
+        raise ValueError("Variant model did not contain any non-region geoms")
+    return np.vstack(mins).min(axis=0), np.vstack(maxs).max(axis=0)
+
+
+@_lru_cache(maxsize=None)
+def _dishrack_compiled_metadata(
+    kind: str,
+    variant_name: str,
+) -> tuple[float, float, float, float, float]:
+    variant_dir = _dishrack_variant_dir(kind, variant_name)
+    model = mujoco.MjModel.from_xml_path(str(variant_dir / "model.xml"))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    min_xyz, max_xyz = _dishrack_compiled_model_bounds(model, data)
+    half_xy = 0.5 * (max_xyz[:2] - min_xyz[:2])
+    center_xy = 0.5 * (min_xyz[:2] + max_xyz[:2])
+    return (
+        float(half_xy[0]),
+        float(half_xy[1]),
+        -float(center_xy[0]),
+        -float(center_xy[1]),
+        -float(min_xyz[2]),
+    )
+
+
+@_lru_cache(maxsize=None)
+def _dishrack_compiled_xy_half_extents(kind: str, variant_name: str) -> tuple[float, float]:
+    half_x, half_y, _, _, _ = _dishrack_compiled_metadata(kind, variant_name)
+    return half_x, half_y
+
+
+@_lru_cache(maxsize=None)
+def _dishrack_compiled_anchor_offset(kind: str, variant_name: str) -> tuple[float, float, float]:
+    _, _, offset_x, offset_y, offset_z = _dishrack_compiled_metadata(kind, variant_name)
+    return offset_x, offset_y, offset_z
+
+
+def _dishrack_absolutize_file_attr(elem: _ET.Element, variant_dir: _Path) -> None:
+    file_attr = elem.get("file")
+    if file_attr and not _Path(file_attr).is_absolute():
+        elem.set("file", str((variant_dir / file_attr).resolve()))
+
+
+def _dishrack_is_visual_geom(geom: _ET.Element) -> bool:
+    cls = geom.get("class", "")
+    if geom.get("name") == "reg_bbox" or cls == "region":
+        return False
+    if cls == "visual":
+        return True
+    if cls == "collision":
+        return False
+    return geom.get("contype") == "0"
+
+
+def _dishrack_remove_dynamic_joints(body: _ET.Element) -> None:
+    for parent in body.iter():
+        for child in list(parent):
+            if child.tag in {"freejoint", "joint"}:
+                parent.remove(child)
+
+
+def _dishrack_prefix_body_names(elem: _ET.Element, prefix: str) -> None:
+    for child in elem.iter():
+        name = child.get("name")
+        if name and child.tag in {"body", "geom", "site"}:
+            child.set("name", _dishrack_prefixed_name(prefix, name))
+
+
+def _dishrack_rewrite_asset_refs(
+    body: _ET.Element,
+    *,
+    mesh_map: dict[str, str],
+    material_map: dict[str, str],
+) -> None:
+    for child in body.iter():
+        mesh_name = child.get("mesh")
+        if mesh_name and mesh_name in mesh_map:
+            child.set("mesh", mesh_map[mesh_name])
+        material_name = child.get("material")
+        if material_name and material_name in material_map:
+            child.set("material", material_map[material_name])
+
+
+def _dishrack_normalize_geoms(body: _ET.Element, *, kind: str) -> None:
+    first_visual = True
+    for parent in body.iter():
+        for child in list(parent):
+            if child.tag != "geom":
+                continue
+            if child.get("name", "").endswith("_reg_bbox") or child.get("class") == "region":
+                parent.remove(child)
+                continue
+
+            if _dishrack_is_visual_geom(child):
+                child.attrib.pop("class", None)
+                child.set("group", "2")
+                child.set("contype", "0")
+                child.set("conaffinity", "0")
+                child.set("density", "0")
+                if first_visual:
+                    child.set("mass", "0.075" if kind == "plate" else "0.5")
+                    first_visual = False
+                else:
+                    child.attrib.pop("mass", None)
+                continue
+
+            child.attrib.pop("class", None)
+            child.set("group", "3")
+            child.set("rgba", "0 0 0 0")
+            child.set("density", "0")
+            child.set("solref", "0.004 1")
+            child.set("solimp", "0.998 0.998 0.001")
+            if kind == "plate":
+                child.set("friction", "3.0 0.1 0.01")
+                child.set("condim", "6")
+                child.set("priority", "1")
+            else:
+                child.set("friction", "0.5")
+
+
+def _dishrack_shift_body(body: _ET.Element, offset: np.ndarray) -> None:
+    base_pos = np.zeros(3, dtype=np.float64)
+    if body.get("pos"):
+        base_pos = np.asarray(_parse_float_list(body.get("pos", "0 0 0")), dtype=np.float64)
+    body.set("pos", _format_float_list((base_pos + offset).tolist()))
+
+
+def _dishrack_serialize_elements(elements: list[_ET.Element], indent: str = "    ") -> str:
+    rendered: list[str] = []
+    for elem in elements:
+        if hasattr(_ET, "indent"):
+            _ET.indent(elem, space="  ")
+        xml = _ET.tostring(elem, encoding="unicode")
+        rendered.append("\n".join(f"{indent}{line}" if line else line for line in xml.splitlines()))
+    return "\n".join(rendered)
+
+
+def _dishrack_wrapper_position(
+    kind: str,
+    variant_name: str,
+    instance_index: int = 0,
+) -> tuple[float, float, float]:
+    variant_key = "current" if variant_name == "current" else "variant"
+    if kind == "dish_rack":
+        return _DISHRACK_RACK_WRAPPER_POSITIONS[variant_key]
+    if kind != "plate":
+        raise ValueError(f"Unsupported dishrack object kind {kind!r}")
+    if not 0 <= instance_index < len(_DISHRACK_PLATE_WRAPPER_XY):
+        raise ValueError(
+            f"Plate instance index must be in [0, {len(_DISHRACK_PLATE_WRAPPER_XY) - 1}], "
+            f"got {instance_index}"
+        )
+    x, y = _DISHRACK_PLATE_WRAPPER_XY[instance_index]
+    return (x, y, _DISHRACK_PLATE_WRAPPER_Z[variant_key])
+
+
+def _dishrack_build_object_block(
+    *,
+    kind: str,
+    variant_name: str,
+    scale_factor: float,
+    object_name: str,
+    joint_name: str | None,
+    instance_index: int,
+    preserve_asset_names: bool = False,
+) -> tuple[list[_ET.Element], _ET.Element]:
+    if variant_name == "current":
+        return _dishrack_build_current_object_block(
+            kind=kind,
+            scale_factor=scale_factor,
+            object_name=object_name,
+            joint_name=joint_name,
+            instance_index=instance_index,
+            preserve_asset_names=preserve_asset_names,
+        )
+
+    variant_dir = _dishrack_variant_dir(kind, variant_name)
+    root = _ET.parse(str(variant_dir / "model.xml")).getroot()
+    object_body = _dishrack_find_object_body(root)
+    offset = np.asarray(_dishrack_compiled_anchor_offset(kind, variant_name), dtype=np.float64) * float(scale_factor)
+
+    prefix = _dishrack_instance_prefix(kind, variant_name, instance_index)
+    mesh_map: dict[str, str] = {}
+    texture_map: dict[str, str] = {}
+    material_map: dict[str, str] = {}
+    temp_asset = _ET.Element("asset")
+
+    asset_root = root.find("asset")
+    if asset_root is not None:
+        asset_children = list(asset_root)
+        for asset_child in asset_children:
+            local_name = _dishrack_asset_local_name(asset_child)
+            if asset_child.tag == "mesh":
+                mesh_map[local_name] = _dishrack_prefixed_name(prefix, local_name)
+            elif asset_child.tag == "texture":
+                texture_map[local_name] = _dishrack_prefixed_name(prefix, local_name)
+            elif asset_child.tag == "material":
+                material_map[local_name] = _dishrack_prefixed_name(prefix, local_name)
+
+        for asset_child in asset_children:
+            cloned = copy.deepcopy(asset_child)
+            local_name = _dishrack_asset_local_name(asset_child)
+            if asset_child.tag == "mesh":
+                cloned.set("name", mesh_map[local_name])
+                _dishrack_absolutize_file_attr(cloned, variant_dir)
+            elif asset_child.tag == "texture":
+                cloned.set("name", texture_map[local_name])
+                _dishrack_absolutize_file_attr(cloned, variant_dir)
+            elif asset_child.tag == "material":
+                cloned.set("name", material_map[local_name])
+                texture_name = asset_child.get("texture")
+                if texture_name and texture_name in texture_map:
+                    cloned.set("texture", texture_map[texture_name])
+            temp_asset.append(cloned)
+
+    cloned_body = copy.deepcopy(object_body)
+    _dishrack_remove_dynamic_joints(cloned_body)
+    _dishrack_prefix_body_names(cloned_body, prefix)
+    _dishrack_rewrite_asset_refs(
+        cloned_body,
+        mesh_map=mesh_map,
+        material_map=material_map,
+    )
+    _dishrack_normalize_geoms(cloned_body, kind=kind)
+    _dishrack_shift_body(cloned_body, offset)
+
+    if abs(scale_factor - 1.0) > 1e-9:
+        mesh_assets = {
+            mesh.get("name", ""): mesh
+            for mesh in temp_asset.findall("mesh")
+            if mesh.get("name")
+        }
+        _scale_body_subtree(
+            body=cloned_body,
+            factor=scale_factor,
+            target_name=joint_name or object_name,
+            asset_elem=temp_asset,
+            mesh_assets=mesh_assets,
+        )
+
+    wrapper = _ET.Element(
+        "body",
+        name=object_name,
+        pos=_format_float_list(list(_dishrack_wrapper_position(kind, variant_name, instance_index))),
+    )
+    if joint_name is not None:
+        _ET.SubElement(wrapper, "freejoint", name=joint_name)
+    wrapper.append(cloned_body)
+    return list(temp_asset), wrapper
+
+
+def _build_dishrack_scene_xml(
+    *,
+    dish_rack_variant: str,
+    plate_variant: str | None = None,
+    plate_variants: str | list[str] | tuple[str, ...] | None = None,
+    scale_states: dict[str, float],
+    base_scene_xml: str | None,
+    base_scene_dir: _Path | None,
+) -> str:
+    base_text = base_scene_xml or _DISHRACK_BASE_SCENE_XML.read_text()
+    base_dir = base_scene_dir or _DISHRACK_BASE_SCENE_XML.parent
+    normalized_plate_variants = _dishrack_normalize_plate_variants(
+        plate_variants if plate_variants is not None else (plate_variant or "current")
+    )
+
+    rack_assets, rack_body = _dishrack_build_object_block(
+        kind="dish_rack",
+        variant_name=dish_rack_variant,
+        scale_factor=float(scale_states.get("dishrack", 1.0)),
+        object_name="dishrack",
+        joint_name=None,
+        instance_index=0,
+        preserve_asset_names=dish_rack_variant == "current",
+    )
+    task_assets = list(rack_assets)
+    task_bodies = [rack_body]
+    for index, current_plate_variant in enumerate(normalized_plate_variants):
+        plate_assets, plate_body = _dishrack_build_object_block(
+            kind="plate",
+            variant_name=current_plate_variant,
+            scale_factor=float(scale_states.get(_dishrack_plate_joint_name(index), scale_states.get("plate_joint", 1.0))),
+            object_name=_dishrack_plate_body_name(index),
+            joint_name=_dishrack_plate_joint_name(index),
+            instance_index=index,
+            preserve_asset_names=current_plate_variant == "current" and index == 0,
+        )
+        task_assets.extend(plate_assets)
+        task_bodies.append(plate_body)
+
+    xml = base_text.replace("<!-- TASK_DEFAULTS_PLACEHOLDER -->", "")
+    xml = xml.replace("<!-- TASK_ASSETS_PLACEHOLDER -->", _dishrack_serialize_elements(task_assets))
+    xml = xml.replace("<!-- TASK_BODY_PLACEHOLDER -->", _dishrack_serialize_elements(task_bodies))
+    return _resolve_scene_xml_paths(xml, base_dir)
 
 
 def _inhand_asset_base(category: str) -> _Path:
@@ -919,7 +2502,28 @@ def _inhand_parse_model_xml(variant_dir: _Path) -> dict:
             "vis_geoms": vis_geoms, "col_geoms": col_geoms}
 
 
-def _inhand_build_xml(category: str, variant_dir: _Path, x: float, y: float, z: float, yaw: float) -> str:
+def _inhand_apply_scene_transforms(xml: str, options: Any = None) -> str:
+    if options is None:
+        return xml
+    if not (options.clean or options.mocap or options.flexible_gripper):
+        return xml
+
+    from xdof_sim.scene_xml import transform_scene_xml
+
+    transformed_xml, _ = transform_scene_xml(xml, options=options)
+    return transformed_xml
+
+
+def _inhand_build_xml(
+    category: str,
+    variant_dir: _Path,
+    x: float,
+    y: float,
+    z: float,
+    yaw: float,
+    *,
+    scale_factor: float = 1.0,
+) -> str:
     base_text = _BASE_SCENE_XML.read_text()
     parsed = _inhand_parse_model_xml(variant_dir)
     prefix = "obj"
@@ -928,8 +2532,9 @@ def _inhand_build_xml(category: str, variant_dir: _Path, x: float, y: float, z: 
     lines_asset = [f"    <!-- Object: {category}/{variant_dir.name} -->"]
     for m in parsed["meshes"]:
         extra = {**m["extra"]}
-        if cat_scale and "scale" not in extra:
-            extra["scale"] = cat_scale
+        base_scale = extra.get("scale") or cat_scale
+        if base_scale or abs(scale_factor - 1.0) > 1e-9:
+            extra["scale"] = _scaled_mesh_attr(base_scale, scale_factor)
         extra_str = "".join(f' {k}="{v}"' for k, v in extra.items())
         lines_asset.append(f'    <mesh file="{variant_dir / m["file"]}" name="{prefix}_{m["name"]}"{extra_str}/>')
     for t in parsed["textures"]:
@@ -977,22 +2582,37 @@ class InHandTransferRandomizer(SceneRandomizer):
 
     perturbations: list = []  # no PerturbRange — we handle placement ourselves
 
-    def __init__(self) -> None:
+    def __init__(self, *, scene_variant: str = "hybrid", scene_xml_transform_options: Any = None) -> None:
         super().__init__()
         self._env_ref = None
         self._rng = np.random.default_rng()
         # Pre-cache variant lists so we don't re-scan on every reset.
         self._variants: dict[str, list[_Path]] = {}
+        self._scene_variant = scene_variant
+        self._scene_xml_transform_options = scene_xml_transform_options
 
     def bind_env(self, env: Any) -> None:
         self._env_ref = env
+
+    def clone(self) -> "SceneRandomizer":
+        cloned = type(self)(
+            scene_variant=self._scene_variant,
+            scene_xml_transform_options=self._scene_xml_transform_options,
+        )
+        return cloned
 
     def _get_variants(self, category: str) -> list[_Path]:
         if category not in self._variants:
             self._variants[category] = _inhand_get_variants(category)
         return self._variants[category]
 
-    def randomize(self, model: Any, data: Any, seed: int | None = None) -> RandomizationState:
+    def randomize(
+        self,
+        model: Any,
+        data: Any,
+        seed: int | None = None,
+        request: Any | None = None,
+    ) -> RandomizationState:
         if seed is not None:
             self._rng = np.random.default_rng(seed)
 
@@ -1007,11 +2627,24 @@ class InHandTransferRandomizer(SceneRandomizer):
         y = float(self._rng.uniform(_Y_LEFT_MIN, _Y_LEFT_MAX) if side == "left"
                   else self._rng.uniform(_Y_RIGHT_MIN, _Y_RIGHT_MAX))
         yaw = float(self._rng.uniform(-np.pi, np.pi))
+        scale_factor = float(self._rng.uniform(0.95, 1.05))
 
-        xml = _inhand_build_xml(category, variant_dir, x, y, _OBJ_Z, yaw)
+        xml = _inhand_build_xml(
+            category,
+            variant_dir,
+            x,
+            y,
+            _OBJ_Z,
+            yaw,
+            scale_factor=scale_factor,
+        )
+        xml = _inhand_apply_scene_transforms(xml, self._scene_xml_transform_options)
 
         if env is not None:
+            from xdof_sim.scene_variants import apply_scene_variant
+
             env.reload_from_xml(xml)
+            apply_scene_variant(env.model, self._scene_variant)
             mujoco.mj_resetData(env.model, env.data)
             env._set_qpos_from_state(env.get_init_q())
             jnt_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_JOINT, "task_object_joint")
@@ -1028,7 +2661,50 @@ class InHandTransferRandomizer(SceneRandomizer):
         return RandomizationState(
             seed=seed or 0,
             object_states={"task_object_joint": {"pos": [x, y, _OBJ_Z], "quat": [np.cos(yaw/2), 0, 0, np.sin(yaw/2)]}},
+            scale_states={"task_object_joint": scale_factor},
+            metadata={"category": category, "variant": variant_dir.name, "side": side},
         )
+
+    def apply(self, model: Any, data: Any, state: RandomizationState) -> None:
+        env = self._env_ref
+        category = str(state.metadata.get("category", ""))
+        variant_name = str(state.metadata.get("variant", ""))
+        if env is None or not category or not variant_name:
+            super().apply(model, data, state)
+            return
+
+        variant_dir = _inhand_asset_base(category) / category / variant_name
+        pose = state.object_states.get("task_object_joint", {})
+        pos = pose.get("pos", [_X_MIN, _Y_LEFT_MIN, _OBJ_Z])
+        quat = np.asarray(pose.get("quat", [1.0, 0.0, 0.0, 0.0]), dtype=np.float64)
+        yaw = _yaw_from_quat(quat)
+        scale_factor = float(state.scale_states.get("task_object_joint", 1.0))
+
+        xml = _inhand_build_xml(
+            category,
+            variant_dir,
+            float(pos[0]),
+            float(pos[1]),
+            float(pos[2]),
+            yaw,
+            scale_factor=scale_factor,
+        )
+        xml = _inhand_apply_scene_transforms(xml, self._scene_xml_transform_options)
+
+        from xdof_sim.scene_variants import apply_scene_variant
+
+        env.reload_from_xml(xml)
+        apply_scene_variant(env.model, self._scene_variant)
+        mujoco.mj_resetData(env.model, env.data)
+        env._set_qpos_from_state(env.get_init_q())
+        jnt_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_JOINT, "task_object_joint")
+        qadr = env.model.jnt_qposadr[jnt_id]
+        env.data.qpos[qadr:qadr + 3] = pos
+        env.data.qpos[qadr + 3:qadr + 7] = quat
+        mujoco.mj_forward(env.model, env.data)
+        env._inhand_category = category
+        env._inhand_variant = variant_name
+        env._inhand_side = state.metadata.get("side")
 
 
 # ---------------------------------------------------------------------------
@@ -1039,7 +2715,6 @@ TASK_RANDOMIZERS: dict[str, SceneRandomizer] = {
     "bottles":      BottlesRandomizer(),
     "marker":       MarkerRandomizer(),
     "pour":         PourRandomizer(),
-    "spelling":     SpellingRandomizer(),
     "drawer":       DrawerRandomizer(),
     "dishrack":     DishRackRandomizer(),
     "blocks":       BlocksRandomizer(),
@@ -1048,5 +2723,6 @@ TASK_RANDOMIZERS: dict[str, SceneRandomizer] = {
     "ball_sorting": BallSortingRandomizer(),
     "chess":        ChessRandomizer(),
     "chess2":       Chess2Randomizer(),
+    "sweep":        SweepRandomizer(),
     # "empty": no free-jointed objects to randomize
 }

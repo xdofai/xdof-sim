@@ -126,7 +126,8 @@
 
   <worldbody>
     <light pos="0 0 1.5" dir="0 0 -1" directional="true" diffuse="0.30 0.30 0.30" specular="0.05 0.05 0.05"/>
-    <geom name="floor" size="0 0 0.05" type="plane" rgba="0.75 0.75 0.75 1"/>
+    <geom name="floor" size="0 0 0.05" type="plane" contype="0" conaffinity="0" rgba="0.75 0.75 0.75 1"/>
+    <geom name="floor_collision" size="0 0 0.05" type="plane" group="3" rgba="0 0 0 0"/>
 
     <geom type="mesh" contype="0" conaffinity="0" group="2" density="0" rgba="0.60 0.62 0.68 1" mesh="base_visual_gate"/>
     <geom size="0.2975 0.65 0.375" pos="0 0 0.375" type="box" group="3" rgba="1 0 0 0.0"/>
@@ -137,7 +138,7 @@
       <geom size="0.015 0.015 0.59" pos="0 0 0.915" quat="0.707107 0.707107 0 0" type="box" group="3" rgba="1 0 0 0.0"/>
       <body name="top_bar_center" pos="0 0 0.915">
         <body name="top_camera_d405" pos="0.08600512 -0.009 0.03932053" quat="0.183012 0.683013 0.683013 0.183012">
-          <geom type="mesh" contype="0" conaffinity="0" group="2" density="0.001" mass="0.001" rgba="0 0 0 0" mesh="camera_d405"/>
+          <geom type="mesh" contype="0" conaffinity="0" group="2" density="0.001" mass="0.001" rgba="0.22 0.22 0.24 1" mesh="camera_d405"/>
           <body name="top_camera_frame" pos="0.009 0 0" quat="0 0 0 1">
             <camera name="top" pos="0 0 0" quat="0 1 0 0" fovy="58"/>
           </body>
@@ -146,9 +147,12 @@
     </body>
 
     <!-- Enclosure walls -->
-    <geom name="back_wall" type="box" size="0.005 0.65 1.0" pos="0.9 0 1.0" group="2" rgba="0.88 0.88 0.88 1"/>
-    <geom name="left_wall" type="box" size="0.45 0.005 1.0" pos="0.45 0.65 1.0" group="2" rgba="0.88 0.88 0.88 1"/>
-    <geom name="right_wall" type="box" size="0.45 0.005 1.0" pos="0.45 -0.65 1.0" group="2" rgba="0.88 0.88 0.88 1"/>
+    <geom name="back_wall" type="box" size="0.005 0.65 1.0" pos="0.9 0 1.0" group="2" contype="0" conaffinity="0" rgba="0.88 0.88 0.88 1"/>
+    <geom name="back_wall_collision" type="box" size="0.005 0.65 1.0" pos="0.9 0 1.0" group="3" rgba="0 0 0 0"/>
+    <geom name="left_wall" type="box" size="0.45 0.005 1.0" pos="0.45 0.65 1.0" group="2" contype="0" conaffinity="0" rgba="0.88 0.88 0.88 1"/>
+    <geom name="left_wall_collision" type="box" size="0.45 0.005 1.0" pos="0.45 0.65 1.0" group="3" rgba="0 0 0 0"/>
+    <geom name="right_wall" type="box" size="0.45 0.005 1.0" pos="0.45 -0.65 1.0" group="2" contype="0" conaffinity="0" rgba="0.88 0.88 0.88 1"/>
+    <geom name="right_wall_collision" type="box" size="0.45 0.005 1.0" pos="0.45 -0.65 1.0" group="3" rgba="0 0 0 0"/>
 
     <!-- Overhead camera -->
     <body name="overhead_camera" pos="0.55 0.0 1.6">
@@ -300,10 +304,10 @@
                   <site name="left_tcp_site" pos="0 0 0" quat="1 0 0 -1" size="0.005" rgba="1 0 0 1" group="4"/>
                   <site name="left_grasp_site" pos="0 0 0.1347" quat="1 0 0 -1" size="0.005" rgba="0 1 0 1" group="4"/>
                   <body name="left_camera_d405" pos="-0.0107 0.095 0.062" quat="0.906 0.423 0 0">
-                    <geom type="mesh" contype="0" conaffinity="0" group="3" density="0.001" mass="0.001"
-                      rgba="0 0 0 0" mesh="camera_d405"/>
+                    <geom type="mesh" contype="0" conaffinity="0" group="2" density="0.001" mass="0.001"
+                      rgba="0.22 0.22 0.24 1" mesh="camera_d405"/>
                     <geom name="left_cam_col" type="sphere" size="0.02" pos="0 0 0"
-                      group="3" rgba="0 0 1 0.0" mass="0.001"/>
+                      group="3" rgba="0.1 0.4 1 0.3" mass="0.001"/>
                     <body name="left_camera_frame" pos="0.009 0 0" quat="0 0 0 1">
                       <camera name="left" pos="0 0 0" quat="0 1 0 0" fovy="58"/>
                     </body>
@@ -417,10 +421,10 @@
                   <site name="right_tcp_site" pos="0 0 0" quat="1 0 0 -1" size="0.005" rgba="1 0 0 1" group="4"/>
                   <site name="right_grasp_site" pos="0 0 0.1347" quat="1 0 0 -1" size="0.005" rgba="0 1 0 1" group="4"/>
                   <body name="right_camera_d405" pos="-0.0107 0.095 0.062" quat="0.906 0.423 0 0">
-                    <geom type="mesh" contype="0" conaffinity="0" group="3" density="0.001" mass="0.001"
-                      rgba="0 0 0 0" mesh="camera_d405"/>
+                    <geom type="mesh" contype="0" conaffinity="0" group="2" density="0.001" mass="0.001"
+                      rgba="0.22 0.22 0.24 1" mesh="camera_d405"/>
                     <geom name="right_cam_col" type="sphere" size="0.02" pos="0 0 0"
-                      group="3" rgba="0 0 1 0.0" mass="0.001"/>
+                      group="3" rgba="0.1 0.4 1 0.3" mass="0.001"/>
                     <body name="right_camera_frame" pos="0.009 0 0" quat="0 0 0 1">
                       <camera name="right" pos="0 0 0" quat="0 1 0 0" fovy="58"/>
                     </body>

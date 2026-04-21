@@ -178,6 +178,12 @@ uv run python -m xdof_sim.teleop.sim_follower --scene hybrid
 Stream the MuJoCo scene to a VR headset (Quest, Vision Pro, etc.) via Three.js
 WebXR. Physics runs server-side; the headset only renders transforms.
 
+Install the repo with the VR extra first:
+
+```bash
+uv sync --extra vr
+```
+
 ```bash
 # Terminal 1: Start the VR streaming server
 uv run python -m xdof_sim.examples.vr_streamer --task blocks

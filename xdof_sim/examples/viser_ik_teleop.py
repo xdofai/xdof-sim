@@ -544,12 +544,15 @@ def main():
     args = parser.parse_args()
 
     from xdof_sim.config import get_viser_ik_config
-    from xdof_sim.env import MuJoCoYAMEnv, _SCENE_XMLS
+    from xdof_sim.env import MuJoCoYAMEnv
     from xdof_sim.scene_variants import apply_scene_variant
+    from xdof_sim.task_registry import get_task_scene_xml, list_scene_task_names
 
-    scene_xml = _SCENE_XMLS.get(args.task)
+    scene_xml = get_task_scene_xml(args.task)
     if scene_xml is None:
-        raise ValueError(f"Unknown task '{args.task}'. Available: {list(_SCENE_XMLS.keys())}")
+        raise ValueError(
+            f"Unknown task '{args.task}'. Available: {list(list_scene_task_names())}"
+        )
 
     config = get_viser_ik_config()
     env = MuJoCoYAMEnv(

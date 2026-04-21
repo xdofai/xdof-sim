@@ -1,0 +1,279 @@
+from __future__ import annotations
+
+from pathlib import Path
+import unittest
+
+import mujoco
+import numpy as np
+
+import xdof_sim
+from xdof_sim.randomization import (
+    SweepRandomizer,
+    _build_dishrack_scene_xml,
+    _dishrack_geom_world_bounds,
+    _dishrack_plate_body_name,
+    _dishrack_plate_joint_name,
+    _dishrack_variant_names,
+)
+
+
+def _body_in_subtree(model: mujoco.MjModel, body_id: int, root_body_id: int) -> bool:
+    current = int(body_id)
+    while current >= 0:
+        if current == root_body_id:
+            return True
+        parent = int(model.body_parentid[current])
+        if parent == current:
+            break
+        current = parent
+    return False
+
+
+class SweepRandomizerTests(unittest.TestCase):
+    def test_sweep_randomizer_uses_pose_randomization_with_clustered_trash(self) -> None:
+        scene_path = Path(__file__).resolve().parents[1] / "xdof_sim" / "models" / "yam_sweep_scene.xml"
+        model = mujoco.MjModel.from_xml_path(str(scene_path))
+        data = mujoco.MjData(model)
+        mujoco.mj_resetData(model, data)
+        mujoco.mj_forward(model, data)
+
+        randomizer = SweepRandomizer()
+        state = randomizer.randomize(model, data, seed=123)
+
+        self.assertEqual(
+            set(state.object_states),
+            {
+                "brush_jnt",
+                "bin_joint",
+                "dustpan_jnt",
+                "trash_1_jnt",
+                "trash_2_jnt",
+                "trash_3_jnt",
+                "trash_4_jnt",
+                "trash_5_jnt",
+                "trash_6_jnt",
+            },
+        )
+
+        brush_jnt_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "brush_jnt")
+        brush_qadr = int(model.jnt_qposadr[brush_jnt_id])
+        brush_nominal = np.array([0.50, 0.20, 0.77])
+        brush_randomized = data.qpos[brush_qadr: brush_qadr + 3].copy()
+        self.assertFalse(np.allclose(brush_randomized, brush_nominal))
+
+        trash_xy = np.array(
+            [state.object_states[f"trash_{i}_jnt"]["pos"][:2] for i in range(1, 7)],
+            dtype=np.float64,
+        )
+        span = trash_xy.max(axis=0) - trash_xy.min(axis=0)
+        self.assertLess(float(span[0]), 0.35)
+        self.assertLess(float(span[1]), 0.35)
+
+        trash_quats = np.array(
+            [state.object_states[f"trash_{i}_jnt"]["quat"] for i in range(1, 7)],
+            dtype=np.float64,
+        )
+        self.assertTrue(
+            np.any(np.abs(trash_quats[:, 1]) > 1e-3) or np.any(np.abs(trash_quats[:, 2]) > 1e-3),
+            msg="expected at least one trash object to receive non-planar orientation randomization",
+        )
+
+        for obj_state in state.object_states.values():
+            self.assertGreaterEqual(obj_state["pos"][0], 0.36)
+            self.assertLessEqual(obj_state["pos"][0], 0.82)
+            self.assertGreaterEqual(obj_state["pos"][1], -0.55)
+            self.assertLessEqual(obj_state["pos"][1], 0.55)
+
+
+class DishRackVariantRandomizationTests(unittest.TestCase):
+    def test_plate_variant_assets_compile_with_capped_collision_hulls(self) -> None:
+        plate_root = Path(__file__).resolve().parents[1] / "xdof_sim" / "models" / "assets" / "task_dishrack" / "plate"
+
+        for variant_name in _dishrack_variant_names("plate"):
+            variant_dir = plate_root / variant_name
+            model_path = variant_dir / "model.xml"
+            mujoco.MjModel.from_xml_path(str(model_path))
+
+            if variant_name == "current":
+                collision_meshes = sorted(variant_dir.glob("model_collision_*.obj"))
+            else:
+                collision_meshes = sorted((variant_dir / "collision").glob("model_collision_*.obj"))
+
+            self.assertGreater(
+                len(collision_meshes),
+                0,
+                msg=f"{variant_name} is missing collision meshes",
+            )
+            self.assertLessEqual(
+                len(collision_meshes),
+                16,
+                msg=f"{variant_name} exceeds the 16-hull collision cap",
+            )
+
+    def test_imported_plate_variants_spawn_from_bottom_origin_across_scale_range(self) -> None:
+        base_dir = Path(__file__).resolve().parents[1] / "xdof_sim" / "models"
+        base_xml = (base_dir / "yam_dishrack_base.xml").read_text()
+        table_z = 0.75
+
+        for variant_name in _dishrack_variant_names("plate"):
+            if variant_name == "current":
+                continue
+            for scale_factor in (0.95, 1.0, 1.05):
+                xml = _build_dishrack_scene_xml(
+                    dish_rack_variant="current",
+                    plate_variant=variant_name,
+                    scale_states={"plate_joint": scale_factor},
+                    base_scene_xml=base_xml,
+                    base_scene_dir=base_dir,
+                )
+                model = mujoco.MjModel.from_xml_string(xml)
+                data = mujoco.MjData(model)
+                mujoco.mj_forward(model, data)
+
+                plate_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "plate")
+                min_z = min(
+                    float(_dishrack_geom_world_bounds(model, data, geom_id)[0][2])
+                    for geom_id in range(model.ngeom)
+                    if _body_in_subtree(model, int(model.geom_bodyid[geom_id]), plate_body_id)
+                )
+                self.assertGreaterEqual(
+                    min_z,
+                    table_z - 1e-6,
+                    msg=(
+                        f"{variant_name} at scale {scale_factor:.2f} bottomed at {min_z:.6f} "
+                        f"below table plane {table_z:.6f}"
+                    ),
+                )
+
+    def test_imported_dishrack_variants_spawn_from_bottom_origin(self) -> None:
+        base_xml = (
+            Path(__file__).resolve().parents[1] / "xdof_sim" / "models" / "yam_dishrack_base.xml"
+        ).read_text()
+        table_z = 0.75
+
+        for variant_name in _dishrack_variant_names("dish_rack"):
+            if variant_name == "current":
+                continue
+            xml = _build_dishrack_scene_xml(
+                dish_rack_variant=variant_name,
+                plate_variant="current",
+                scale_states={"plate_joint": 1.0},
+                base_scene_xml=base_xml,
+                base_scene_dir=Path(__file__).resolve().parents[1] / "xdof_sim" / "models",
+            )
+            model = mujoco.MjModel.from_xml_string(xml)
+            data = mujoco.MjData(model)
+            mujoco.mj_forward(model, data)
+
+            dishrack_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "dishrack")
+            min_z = min(
+                float(_dishrack_geom_world_bounds(model, data, geom_id)[0][2])
+                for geom_id in range(model.ngeom)
+                if _body_in_subtree(model, int(model.geom_bodyid[geom_id]), dishrack_body_id)
+            )
+            self.assertGreaterEqual(
+                min_z,
+                table_z - 1e-6,
+                msg=f"{variant_name} bottomed at {min_z:.6f} below table plane {table_z:.6f}",
+            )
+
+    def test_build_dishrack_scene_xml_preserves_current_scene_assets(self) -> None:
+        xml = _build_dishrack_scene_xml(
+            dish_rack_variant="current",
+            plate_variant="current",
+            scale_states={"plate_joint": 1.0},
+            base_scene_xml=None,
+            base_scene_dir=None,
+        )
+
+        self.assertIn('mesh="rack_visual"', xml)
+        self.assertIn('material="rack_mat"', xml)
+        self.assertIn('mesh="plate_visual"', xml)
+        self.assertIn('material="plate_mat"', xml)
+        self.assertNotIn("dish_rack_current_model", xml)
+        self.assertNotIn("plate_current_model", xml)
+
+    def test_build_dishrack_scene_xml_loads_selected_variants(self) -> None:
+        xml = _build_dishrack_scene_xml(
+            dish_rack_variant="DishRack040",
+            plate_variant="plate_0",
+            scale_states={"plate_joint": 1.0},
+            base_scene_xml=None,
+            base_scene_dir=None,
+        )
+        model = mujoco.MjModel.from_xml_string(xml)
+
+        self.assertGreaterEqual(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "dishrack"), 0)
+        self.assertGreaterEqual(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "plate"), 0)
+        self.assertGreaterEqual(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "plate_joint"), 0)
+
+    def test_build_dishrack_scene_xml_supports_multiple_plate_instances(self) -> None:
+        plate_variants = ["current", "plate_0", "plate_1", "current"]
+        xml = _build_dishrack_scene_xml(
+            dish_rack_variant="DishRack040",
+            plate_variants=plate_variants,
+            scale_states={
+                "plate_joint": 1.0,
+                "plate_joint_1": 0.97,
+                "plate_joint_2": 1.03,
+                "plate_joint_3": 1.01,
+            },
+            base_scene_xml=None,
+            base_scene_dir=None,
+        )
+        model = mujoco.MjModel.from_xml_string(xml)
+
+        self.assertGreaterEqual(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "dishrack"), 0)
+        for index in range(len(plate_variants)):
+            self.assertGreaterEqual(
+                mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, _dishrack_plate_body_name(index)),
+                0,
+            )
+            self.assertGreaterEqual(
+                mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, _dishrack_plate_joint_name(index)),
+                0,
+            )
+
+    def test_make_env_randomizes_dishrack_mesh_variants(self) -> None:
+        env = xdof_sim.make_env(task="dishrack", render_cameras=False)
+        try:
+            self.assertEqual(env._scene_xml.name, "yam_dishrack_base.xml")
+            self.assertGreaterEqual(mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_BODY, "dishrack"), 0)
+            self.assertGreaterEqual(mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_JOINT, "plate_joint"), 0)
+
+            for seed in range(8):
+                env.reset(seed=seed, randomize=True)
+                state = env._last_randomization
+                self.assertIsNotNone(state)
+                assert state is not None
+
+                plate_count = int(state.metadata["plate_count"])
+                plate_variants = list(state.metadata["plate_variants"])
+                plate_joint_names = {
+                    name for name in state.object_states if name == "plate_joint" or name.startswith("plate_joint_")
+                }
+                expected_joint_names = {_dishrack_plate_joint_name(index) for index in range(plate_count)}
+
+                self.assertIn("dishrack", state.object_states)
+                self.assertEqual(plate_joint_names, expected_joint_names)
+                self.assertGreaterEqual(plate_count, 1)
+                self.assertLessEqual(plate_count, 4)
+                self.assertEqual(len(plate_variants), plate_count)
+                self.assertIn(state.metadata["plate_variant"], set(_dishrack_variant_names("plate")))
+                self.assertIn(state.metadata["dish_rack_variant"], set(_dishrack_variant_names("dish_rack")))
+
+                for index in range(plate_count):
+                    self.assertGreaterEqual(
+                        mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_BODY, _dishrack_plate_body_name(index)),
+                        0,
+                    )
+                    self.assertGreaterEqual(
+                        mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_JOINT, _dishrack_plate_joint_name(index)),
+                        0,
+                    )
+        finally:
+            env.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

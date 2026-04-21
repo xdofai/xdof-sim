@@ -74,7 +74,8 @@
       diffuse="0.30 0.30 0.30" specular="0.05 0.05 0.05"/>
 
     <!-- Floor -->
-    <geom name="floor" size="0 0 0.05" type="plane" rgba="0.75 0.75 0.75 1"/>
+    <geom name="floor" size="0 0 0.05" type="plane" contype="0" conaffinity="0" rgba="0.75 0.75 0.75 1"/>
+    <geom name="floor_collision" size="0 0 0.05" type="plane" group="3" rgba="0 0 0 0"/>
 
     <!-- Gate/station structure (visual) -->
     <geom type="mesh" contype="0" conaffinity="0" group="2" density="0" rgba="0.60 0.62 0.68 1" mesh="base_visual_gate"/>
@@ -98,17 +99,14 @@
 
     <!-- Enclosure walls ( matching real white-walled workspace) -->
     <!-- Back wall: behind the table, spanning full Y width -->
-    <geom name="back_wall" type="box" size="0.005 0.65 1.0"
-      pos="0.9 0 1.0" group="2"
-      rgba="0.88 0.88 0.88 1"/>
+    <geom name="back_wall" type="box" size="0.005 0.65 1.0" pos="0.9 0 1.0" group="2" contype="0" conaffinity="0" rgba="0.88 0.88 0.88 1"/>
+    <geom name="back_wall_collision" type="box" size="0.005 0.65 1.0" pos="0.9 0 1.0" group="3" rgba="0 0 0 0"/>
     <!-- Left wall: at positive Y, from gate to back wall -->
-    <geom name="left_wall" type="box" size="0.45 0.005 1.0"
-      pos="0.45 0.65 1.0" group="2"
-      rgba="0.88 0.88 0.88 1"/>
+    <geom name="left_wall" type="box" size="0.45 0.005 1.0" pos="0.45 0.65 1.0" group="2" contype="0" conaffinity="0" rgba="0.88 0.88 0.88 1"/>
+    <geom name="left_wall_collision" type="box" size="0.45 0.005 1.0" pos="0.45 0.65 1.0" group="3" rgba="0 0 0 0"/>
     <!-- Right wall: at negative Y, from gate to back wall -->
-    <geom name="right_wall" type="box" size="0.45 0.005 1.0"
-      pos="0.45 -0.65 1.0" group="2"
-      rgba="0.88 0.88 0.88 1"/>
+    <geom name="right_wall" type="box" size="0.45 0.005 1.0" pos="0.45 -0.65 1.0" group="2" contype="0" conaffinity="0" rgba="0.88 0.88 0.88 1"/>
+    <geom name="right_wall_collision" type="box" size="0.45 0.005 1.0" pos="0.45 -0.65 1.0" group="3" rgba="0 0 0 0"/>
 
     <!-- Play table (visual only + collision plane at surface) -->
     

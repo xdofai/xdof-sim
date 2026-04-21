@@ -44,6 +44,12 @@
     <default class="sweep_pan_col">
       <geom type="mesh" condim="3" friction="0.6 0.01 0.002" solref="0.004 1" solimp="0.998 0.998 0.001" group="3" density="0" rgba="0 0 0 0"/>
     </default>
+    <default class="trash_paper_vis">
+      <geom type="mesh" contype="0" conaffinity="0" density="0" group="2"/>
+    </default>
+    <default class="trash_paper_col">
+      <geom type="mesh" condim="3" friction="0.15 0.003 0.0005" solref="0.006 1" solimp="0.998 0.998 0.001" group="3" density="100" rgba="0 0 0 0"/>
+    </default>
   </default>
 
   <asset>
@@ -98,6 +104,31 @@
     <mesh name="dustpan_col14" file="dustpan/dustpan_collision_14.obj" scale="0.099 0.099 0.099"/>
     <mesh name="dustpan_col15" file="dustpan/dustpan_collision_15.obj" scale="0.099 0.099 0.099"/>
 
+    <!-- Paper-ball debris meshes (scale 0.016 for ~4 cm scraps) -->
+    <material name="trash_1_mat" rgba="0.30 0.30 0.30 1" specular="0.02" shininess="0.02"/>
+    <material name="trash_2_mat" rgba="0.40 0.35 0.30 1" specular="0.02" shininess="0.02"/>
+    <material name="trash_3_mat" rgba="0.50 0.40 0.30 1" specular="0.02" shininess="0.02"/>
+    <material name="trash_4_mat" rgba="0.60 0.50 0.35 1" specular="0.02" shininess="0.02"/>
+    <material name="trash_5_mat" rgba="0.35 0.30 0.25 1" specular="0.02" shininess="0.02"/>
+    <material name="trash_6_mat" rgba="0.45 0.40 0.35 1" specular="0.02" shininess="0.02"/>
+    <mesh name="trash_paper_vis_mesh" file="paper_ball/paper_ball.obj" scale="0.016 0.016 0.016"/>
+    <mesh name="trash_paper_col0" file="paper_ball/paper_ball_collision_0.obj" scale="0.016 0.016 0.016"/>
+    <mesh name="trash_paper_col1" file="paper_ball/paper_ball_collision_1.obj" scale="0.016 0.016 0.016"/>
+    <mesh name="trash_paper_col2" file="paper_ball/paper_ball_collision_2.obj" scale="0.016 0.016 0.016"/>
+    <mesh name="trash_paper_col3" file="paper_ball/paper_ball_collision_3.obj" scale="0.016 0.016 0.016"/>
+    <mesh name="trash_paper_col4" file="paper_ball/paper_ball_collision_4.obj" scale="0.016 0.016 0.016"/>
+    <mesh name="trash_paper_col5" file="paper_ball/paper_ball_collision_5.obj" scale="0.016 0.016 0.016"/>
+    <mesh name="trash_paper_col6" file="paper_ball/paper_ball_collision_6.obj" scale="0.016 0.016 0.016"/>
+    <mesh name="trash_paper_col7" file="paper_ball/paper_ball_collision_7.obj" scale="0.016 0.016 0.016"/>
+    <mesh name="trash_paper_col8" file="paper_ball/paper_ball_collision_8.obj" scale="0.016 0.016 0.016"/>
+    <mesh name="trash_paper_col9" file="paper_ball/paper_ball_collision_9.obj" scale="0.016 0.016 0.016"/>
+    <mesh name="trash_paper_col10" file="paper_ball/paper_ball_collision_10.obj" scale="0.016 0.016 0.016"/>
+    <mesh name="trash_paper_col11" file="paper_ball/paper_ball_collision_11.obj" scale="0.016 0.016 0.016"/>
+    <mesh name="trash_paper_col12" file="paper_ball/paper_ball_collision_12.obj" scale="0.016 0.016 0.016"/>
+    <mesh name="trash_paper_col13" file="paper_ball/paper_ball_collision_13.obj" scale="0.016 0.016 0.016"/>
+    <mesh name="trash_paper_col14" file="paper_ball/paper_ball_collision_14.obj" scale="0.016 0.016 0.016"/>
+    <mesh name="trash_paper_col15" file="paper_ball/paper_ball_collision_15.obj" scale="0.016 0.016 0.016"/>
+
     <!-- Yam arm meshes -->
     <mesh file="i2rt_yam/assets/model2.stl"/>
     <mesh file="i2rt_yam/assets/model2__2.stl"/>
@@ -127,7 +158,8 @@
 
   <worldbody>
     <light pos="0 0 1.5" dir="0 0 -1" directional="true" diffuse="0.30 0.30 0.30" specular="0.05 0.05 0.05"/>
-    <geom name="floor" size="0 0 0.05" type="plane" rgba="0.75 0.75 0.75 1"/>
+    <geom name="floor" size="0 0 0.05" type="plane" contype="0" conaffinity="0" rgba="0.75 0.75 0.75 1"/>
+    <geom name="floor_collision" size="0 0 0.05" type="plane" group="3" rgba="0 0 0 0"/>
 
     <geom type="mesh" contype="0" conaffinity="0" group="2" density="0" rgba="0.60 0.62 0.68 1" mesh="base_visual_gate"/>
     <geom size="0.2975 0.65 0.375" pos="0 0 0.375" type="box" group="3" rgba="1 0 0 0.0"/>
@@ -138,7 +170,7 @@
       <geom size="0.015 0.015 0.59" pos="0 0 0.915" quat="0.707107 0.707107 0 0" type="box" group="3" rgba="1 0 0 0.0"/>
       <body name="top_bar_center" pos="0 0 0.915">
         <body name="top_camera_d405" pos="0.08600512 -0.009 0.03932053" quat="0.183012 0.683013 0.683013 0.183012">
-          <geom type="mesh" contype="0" conaffinity="0" group="2" density="0.001" mass="0.001" rgba="0 0 0 0" mesh="camera_d405"/>
+          <geom type="mesh" contype="0" conaffinity="0" group="2" density="0.001" mass="0.001" rgba="0.22 0.22 0.24 1" mesh="camera_d405"/>
           <body name="top_camera_frame" pos="0.009 0 0" quat="0 0 0 1">
             <camera name="top" pos="0 0 0" quat="0 1 0 0" fovy="58"/>
           </body>
@@ -146,9 +178,12 @@
       </body>
     </body>
 
-    <geom name="back_wall" type="box" size="0.005 0.65 1.0" pos="0.9 0 1.0" group="2"  rgba="0.88 0.88 0.88 1"/>
-    <geom name="left_wall" type="box" size="0.45 0.005 1.0" pos="0.45 0.65 1.0" group="2"  rgba="0.88 0.88 0.88 1"/>
-    <geom name="right_wall" type="box" size="0.45 0.005 1.0" pos="0.45 -0.65 1.0" group="2"  rgba="0.88 0.88 0.88 1"/>
+    <geom name="back_wall" type="box" size="0.005 0.65 1.0" pos="0.9 0 1.0" group="2" contype="0" conaffinity="0" rgba="0.88 0.88 0.88 1"/>
+    <geom name="back_wall_collision" type="box" size="0.005 0.65 1.0" pos="0.9 0 1.0" group="3" rgba="0 0 0 0"/>
+    <geom name="left_wall" type="box" size="0.45 0.005 1.0" pos="0.45 0.65 1.0" group="2" contype="0" conaffinity="0" rgba="0.88 0.88 0.88 1"/>
+    <geom name="left_wall_collision" type="box" size="0.45 0.005 1.0" pos="0.45 0.65 1.0" group="3" rgba="0 0 0 0"/>
+    <geom name="right_wall" type="box" size="0.45 0.005 1.0" pos="0.45 -0.65 1.0" group="2" contype="0" conaffinity="0" rgba="0.88 0.88 0.88 1"/>
+    <geom name="right_wall_collision" type="box" size="0.45 0.005 1.0" pos="0.45 -0.65 1.0" group="3" rgba="0 0 0 0"/>
 
     
     <!-- Side cameras on cage walls -->
@@ -226,30 +261,126 @@
         condim="6" friction="5.0 0.2 0.02" solref="0.002 1" solimp="0.999 0.999 0.001" group="3" rgba="0 0 0 0"/>
     </body>
 
-    <!-- Trash cubes (small debris to sweep up) -->
+    <!-- Paper-ball debris to sweep up -->
     <body name="trash_1" pos="0.45 0.05 0.76">
       <freejoint name="trash_1_jnt"/>
-      <geom type="box" size="0.01 0.01 0.01" rgba="0.3 0.3 0.3 1" mass="0.003" condim="3" friction="0.3 0.005 0.001" solref="0.004 1" solimp="0.998 0.998 0.001"/>
+      <geom mesh="trash_paper_vis_mesh" material="trash_1_mat" class="trash_paper_vis"/>
+      <geom mesh="trash_paper_col0" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col1" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col2" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col3" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col4" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col5" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col6" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col7" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col8" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col9" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col10" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col11" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col12" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col13" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col14" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col15" class="trash_paper_col"/>
     </body>
     <body name="trash_2" pos="0.50 -0.10 0.76">
       <freejoint name="trash_2_jnt"/>
-      <geom type="box" size="0.008 0.012 0.008" rgba="0.4 0.35 0.3 1" mass="0.002" condim="3" friction="0.3 0.005 0.001" solref="0.004 1" solimp="0.998 0.998 0.001"/>
+      <geom mesh="trash_paper_vis_mesh" material="trash_2_mat" class="trash_paper_vis"/>
+      <geom mesh="trash_paper_col0" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col1" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col2" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col3" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col4" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col5" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col6" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col7" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col8" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col9" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col10" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col11" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col12" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col13" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col14" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col15" class="trash_paper_col"/>
     </body>
-    <body name="trash_3" pos="0.55 0.15 0.76">
+    <body name="trash_3" pos="0.57 0.05 0.76">
       <freejoint name="trash_3_jnt"/>
-      <geom type="box" size="0.012 0.008 0.01" rgba="0.5 0.4 0.3 1" mass="0.003" condim="3" friction="0.3 0.005 0.001" solref="0.004 1" solimp="0.998 0.998 0.001"/>
+      <geom mesh="trash_paper_vis_mesh" material="trash_3_mat" class="trash_paper_vis"/>
+      <geom mesh="trash_paper_col0" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col1" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col2" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col3" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col4" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col5" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col6" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col7" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col8" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col9" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col10" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col11" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col12" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col13" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col14" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col15" class="trash_paper_col"/>
     </body>
-    <body name="trash_4" pos="0.50 -0.08 0.76">
+    <body name="trash_4" pos="0.54 -0.02 0.76">
       <freejoint name="trash_4_jnt"/>
-      <geom type="box" size="0.009 0.009 0.009" rgba="0.6 0.5 0.35 1" mass="0.002" condim="3" friction="0.3 0.005 0.001" solref="0.004 1" solimp="0.998 0.998 0.001"/>
+      <geom mesh="trash_paper_vis_mesh" material="trash_4_mat" class="trash_paper_vis"/>
+      <geom mesh="trash_paper_col0" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col1" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col2" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col3" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col4" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col5" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col6" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col7" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col8" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col9" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col10" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col11" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col12" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col13" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col14" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col15" class="trash_paper_col"/>
     </body>
-    <body name="trash_5" pos="0.58 0.12 0.76">
+    <body name="trash_5" pos="0.61 0.13 0.76">
       <freejoint name="trash_5_jnt"/>
-      <geom type="box" size="0.011 0.007 0.011" rgba="0.35 0.3 0.25 1" mass="0.003" condim="3" friction="0.3 0.005 0.001" solref="0.004 1" solimp="0.998 0.998 0.001"/>
+      <geom mesh="trash_paper_vis_mesh" material="trash_5_mat" class="trash_paper_vis"/>
+      <geom mesh="trash_paper_col0" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col1" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col2" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col3" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col4" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col5" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col6" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col7" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col8" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col9" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col10" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col11" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col12" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col13" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col14" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col15" class="trash_paper_col"/>
     </body>
     <body name="trash_6" pos="0.63 -0.10 0.76">
       <freejoint name="trash_6_jnt"/>
-      <geom type="box" size="0.01 0.01 0.008" rgba="0.45 0.4 0.35 1" mass="0.002" condim="3" friction="0.3 0.005 0.001" solref="0.004 1" solimp="0.998 0.998 0.001"/>
+      <geom mesh="trash_paper_vis_mesh" material="trash_6_mat" class="trash_paper_vis"/>
+      <geom mesh="trash_paper_col0" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col1" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col2" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col3" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col4" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col5" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col6" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col7" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col8" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col9" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col10" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col11" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col12" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col13" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col14" class="trash_paper_col"/>
+      <geom mesh="trash_paper_col15" class="trash_paper_col"/>
     </body>
 
     <!-- ==================== LEFT ARM ==================== -->
@@ -305,10 +436,10 @@
                   <site name="left_tcp_site" pos="0 0 0" quat="1 0 0 -1" size="0.005" rgba="1 0 0 1" group="4"/>
                   <site name="left_grasp_site" pos="0 0 0.1347" quat="1 0 0 -1" size="0.005" rgba="0 1 0 1" group="4"/>
                   <body name="left_camera_d405" pos="-0.0107 0.095 0.062" quat="0.906 0.423 0 0">
-                    <geom type="mesh" contype="0" conaffinity="0" group="3" density="0.001" mass="0.001"
-                      rgba="0 0 0 0" mesh="camera_d405"/>
+                    <geom type="mesh" contype="0" conaffinity="0" group="2" density="0.001" mass="0.001"
+                      rgba="0.22 0.22 0.24 1" mesh="camera_d405"/>
                     <geom name="left_cam_col" type="sphere" size="0.02" pos="0 0 0"
-                      group="3" rgba="0 0 1 0.0" mass="0.001"/>
+                      group="3" rgba="0.1 0.4 1 0.3" mass="0.001"/>
                     <body name="left_camera_frame" pos="0.009 0 0" quat="0 0 0 1">
                       <camera name="left" pos="0 0 0" quat="0 1 0 0" fovy="58"/>
                     </body>
@@ -422,10 +553,10 @@
                   <site name="right_tcp_site" pos="0 0 0" quat="1 0 0 -1" size="0.005" rgba="1 0 0 1" group="4"/>
                   <site name="right_grasp_site" pos="0 0 0.1347" quat="1 0 0 -1" size="0.005" rgba="0 1 0 1" group="4"/>
                   <body name="right_camera_d405" pos="-0.0107 0.095 0.062" quat="0.906 0.423 0 0">
-                    <geom type="mesh" contype="0" conaffinity="0" group="3" density="0.001" mass="0.001"
-                      rgba="0 0 0 0" mesh="camera_d405"/>
+                    <geom type="mesh" contype="0" conaffinity="0" group="2" density="0.001" mass="0.001"
+                      rgba="0.22 0.22 0.24 1" mesh="camera_d405"/>
                     <geom name="right_cam_col" type="sphere" size="0.02" pos="0 0 0"
-                      group="3" rgba="0 0 1 0.0" mass="0.001"/>
+                      group="3" rgba="0.1 0.4 1 0.3" mass="0.001"/>
                     <body name="right_camera_frame" pos="0.009 0 0" quat="0 0 0 1">
                       <camera name="right" pos="0 0 0" quat="0 1 0 0" fovy="58"/>
                     </body>

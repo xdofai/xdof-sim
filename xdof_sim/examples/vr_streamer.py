@@ -19,14 +19,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import copy
+import hashlib
 import json
 import os
-import re
+import queue
 import struct
 import threading
 import time
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 os.environ.pop("MUJOCO_GL", None)
@@ -43,12 +42,49 @@ try:
 except ImportError:
     raise SystemExit("Missing zmq. Install with: uv add pyzmq")
 
+from xdof_sim.debug import TASK_DASHBOARD_HTML, TaskEvalDashboardState
+from xdof_sim.scene_xml import SceneXmlTransformOptions, build_scene_xml
 from xdof_sim.teleop import communication as comms
 
 
 # ---------------------------------------------------------------------------
 # Mesh export
 # ---------------------------------------------------------------------------
+
+_DEFAULT_VISIBLE_GROUPS = (0, 1, 2)
+_AGGREGATE_EXPORT_ROOTS = frozenset({"dishrack", "plate"})
+
+
+def _parse_visible_groups_arg(values: list[str] | None) -> tuple[int, ...]:
+    """Parse ``--visible-groups`` into a validated, deduplicated tuple."""
+    if not values:
+        return _DEFAULT_VISIBLE_GROUPS
+
+    tokens: list[str] = []
+    for value in values:
+        tokens.extend(part.strip() for part in value.split(",") if part.strip())
+
+    if not tokens:
+        return _DEFAULT_VISIBLE_GROUPS
+
+    if len(tokens) == 1 and tokens[0].lower() == "all":
+        return tuple(range(int(mujoco.mjNGROUP)))
+
+    groups: list[int] = []
+    for token in tokens:
+        try:
+            group = int(token)
+        except ValueError as exc:
+            raise ValueError(
+                f"invalid visible group '{token}'; expected integers in [0, {mujoco.mjNGROUP - 1}] or 'all'"
+            ) from exc
+        if not 0 <= group < int(mujoco.mjNGROUP):
+            raise ValueError(
+                f"invalid visible group '{group}'; expected integers in [0, {mujoco.mjNGROUP - 1}]"
+            )
+        groups.append(group)
+
+    return tuple(sorted(set(groups)))
 
 def _get_geom_rgba(model, geom_id):
     matid = model.geom_matid[geom_id]
@@ -280,78 +316,215 @@ def _patch_glb_add_material(glb_path: str):
         f.write(rest)
 
 
-def export_body_glbs(model, output_dir: Path):
-    """Export each body's merged mesh as a GLB file. Returns body info dict."""
+def _body_name(model, body_id: int) -> str:
+    return mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, int(body_id)) or f"body_{int(body_id)}"
+
+
+def _is_aggregate_export_root_name(name: str) -> bool:
+    if name in _AGGREGATE_EXPORT_ROOTS:
+        return True
+    if not name.startswith("plate_"):
+        return False
+    return name[len("plate_"):].isdigit()
+
+
+def _body_export_root_id(model, body_id: int) -> int:
+    current = int(body_id)
+    while current > 0:
+        if _is_aggregate_export_root_name(_body_name(model, current)):
+            return current
+        parent = int(model.body_parentid[current])
+        if parent <= 0 or parent == current:
+            break
+        current = parent
+    return int(body_id)
+
+
+def _transform_inverse(pos: np.ndarray, rot: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    rot_inv = rot.T
+    pos_inv = -rot_inv @ pos
+    return pos_inv, rot_inv
+
+
+def _compose_transform(pos_a: np.ndarray, rot_a: np.ndarray, pos_b: np.ndarray, rot_b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    return pos_a + rot_a @ pos_b, rot_a @ rot_b
+
+
+def _geom_relative_transform(data, root_body_id: int, geom_id: int) -> tuple[np.ndarray, np.ndarray]:
+    root_pos = np.asarray(data.xpos[root_body_id], dtype=np.float64)
+    root_rot = np.asarray(data.xmat[root_body_id], dtype=np.float64).reshape(3, 3)
+    root_pos_inv, root_rot_inv = _transform_inverse(root_pos, root_rot)
+    geom_pos = np.asarray(data.geom_xpos[geom_id], dtype=np.float64)
+    geom_rot = np.asarray(data.geom_xmat[geom_id], dtype=np.float64).reshape(3, 3)
+    return _compose_transform(root_pos_inv, root_rot_inv, geom_pos, geom_rot)
+
+
+def _round_tuple(values, ndigits: int = 6) -> tuple[float, ...]:
+    arr = np.asarray(values, dtype=np.float64).reshape(-1)
+    return tuple(float(x) for x in np.round(arr, ndigits))
+
+
+def _geom_signature(model, data, root_body_id: int, geom_id: int) -> tuple:
+    rel_pos, rel_rot = _geom_relative_transform(data, root_body_id, geom_id)
+    geom_type = int(model.geom_type[geom_id])
+    mesh_id = int(model.geom_dataid[geom_id]) if geom_type == mujoco.mjtGeom.mjGEOM_MESH else -1
+    mesh_name = ""
+    mesh_shape: tuple[int, int] = (0, 0)
+    if mesh_id >= 0:
+        mesh_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_MESH, mesh_id) or ""
+        mesh_shape = (int(model.mesh_vertnum[mesh_id]), int(model.mesh_facenum[mesh_id]))
+
+    matid = int(model.geom_matid[geom_id])
+    mat_name = ""
+    mat_rgba: tuple[float, ...]
+    tex_name = ""
+    if matid >= 0:
+        mat_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_MATERIAL, matid) or f"mat_{matid}"
+        mat_rgba = _round_tuple(model.mat_rgba[matid])
+        texid = int(model.mat_texid[matid, int(mujoco.mjtTextureRole.mjTEXROLE_RGB)])
+        if texid < 0:
+            texid = int(model.mat_texid[matid, int(mujoco.mjtTextureRole.mjTEXROLE_RGBA)])
+        if texid >= 0:
+            tex_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_TEXTURE, texid) or f"tex_{texid}"
+    else:
+        mat_rgba = _round_tuple(model.geom_rgba[geom_id])
+
+    return (
+        geom_type,
+        mesh_name,
+        mesh_shape,
+        _round_tuple(model.geom_size[geom_id]),
+        _round_tuple(rel_pos),
+        _round_tuple(rel_rot),
+        mat_name,
+        mat_rgba,
+        tex_name,
+    )
+
+
+def _sanitize_export_key(body_key: str) -> str:
+    chars: list[str] = []
+    for ch in body_key:
+        if ch.isalnum() or ch in {"-", "_"}:
+            chars.append(ch)
+        else:
+            chars.append("_")
+    return "".join(chars)
+
+
+def _collect_export_entries(model, data, visible_groups: set[int]) -> list[dict[str, object]]:
+    grouped_geoms: dict[int, list[int]] = {}
+    for geom_id in range(model.ngeom):
+        if int(model.geom_group[geom_id]) not in visible_groups:
+            continue
+        if model.geom_type[geom_id] == mujoco.mjtGeom.mjGEOM_PLANE:
+            continue
+        root_body_id = _body_export_root_id(model, int(model.geom_bodyid[geom_id]))
+        grouped_geoms.setdefault(root_body_id, []).append(geom_id)
+
+    entries: list[dict[str, object]] = []
+    for root_body_id in sorted(grouped_geoms, key=lambda body_id: _body_name(model, body_id)):
+        body_key = _body_name(model, root_body_id)
+        geom_ids = list(grouped_geoms[root_body_id])
+        signatures = sorted(
+            (_geom_signature(model, data, root_body_id, geom_id) for geom_id in geom_ids),
+            key=repr,
+        )
+        mesh_key = hashlib.sha1(repr(signatures).encode("utf-8")).hexdigest()[:16]
+        is_fixed = (
+            model.body_weldid[root_body_id] == 0
+            and model.body_mocapid[model.body_rootid[root_body_id]] < 0
+        )
+        entries.append(
+            {
+                "body_key": body_key,
+                "geom_ids": geom_ids,
+                "transform_body_id": int(root_body_id),
+                "is_fixed": bool(is_fixed),
+                "mesh_key": mesh_key,
+            }
+        )
+    return entries
+
+
+def _export_entry_glb(model, data, entry: dict[str, object], glb_path: Path) -> None:
     from scipy.spatial.transform import Rotation
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    visible_groups = {0, 1, 2}
-    body_geoms: dict[int, list[int]] = {}
-
-    for i in range(model.ngeom):
-        if int(model.geom_group[i]) not in visible_groups:
+    root_body_id = int(entry["transform_body_id"])
+    geom_ids = [int(geom_id) for geom_id in entry["geom_ids"]]
+    glb_path.parent.mkdir(parents=True, exist_ok=True)
+    meshes = []
+    for gid in geom_ids:
+        geom_type = model.geom_type[gid]
+        if geom_type == mujoco.mjtGeom.mjGEOM_PLANE:
             continue
-        if model.geom_type[i] == mujoco.mjtGeom.mjGEOM_PLANE:
-            continue
-        body_geoms.setdefault(model.geom_bodyid[i], []).append(i)
-
-    bodies = {}
-    for body_id, geom_ids in body_geoms.items():
-        meshes = []
-        for gid in geom_ids:
-            geom_type = model.geom_type[gid]
-            if geom_type == mujoco.mjtGeom.mjGEOM_PLANE:
-                continue
-            elif geom_type == mujoco.mjtGeom.mjGEOM_MESH:
-                mesh = _mujoco_mesh_to_trimesh(model, gid)
-            else:
-                mesh = _create_primitive_mesh(model, gid)
-            if mesh is None:
-                continue
-
-            # Geom-local transform
-            qw = model.geom_quat[gid]
-            rot = Rotation.from_quat([qw[1], qw[2], qw[3], qw[0]]).as_matrix()
-            T = np.eye(4)
-            T[:3, :3] = rot
-            T[:3, 3] = model.geom_pos[gid]
-            mesh.apply_transform(T)
-
-            # Convert Z-up to Y-up for Three.js: (x,y,z) -> (x,z,-y)
-            verts = np.array(mesh.vertices)
-            new_verts = np.empty_like(verts)
-            new_verts[:, 0] = verts[:, 0]
-            new_verts[:, 1] = verts[:, 2]
-            new_verts[:, 2] = -verts[:, 1]
-            mesh.vertices = new_verts
-
-            meshes.append(mesh)
-
-        if not meshes:
-            continue
-
-        is_fixed = (model.body_weldid[body_id] == 0
-                    and model.body_mocapid[model.body_rootid[body_id]] < 0)
-
-        glb_path = output_dir / f"body_{body_id}.glb"
-
-        # Export as Scene to preserve multiple materials (textured + colored)
-        has_texture = any(isinstance(m.visual, trimesh.visual.TextureVisuals) for m in meshes)
-        if has_texture or len(meshes) > 1:
-            scene = trimesh.Scene(meshes)
-            scene.export(str(glb_path), file_type="glb")
+        elif geom_type == mujoco.mjtGeom.mjGEOM_MESH:
+            mesh = _mujoco_mesh_to_trimesh(model, gid)
         else:
-            meshes[0].export(str(glb_path), file_type="glb")
+            mesh = _create_primitive_mesh(model, gid)
+        if mesh is None:
+            continue
 
-        # Patch GLB: add material for vertex-colored meshes (trimesh omits it)
-        _patch_glb_add_material(str(glb_path))
+        rel_pos, rel_rot = _geom_relative_transform(data, root_body_id, gid)
+        T = np.eye(4)
+        T[:3, :3] = rel_rot
+        T[:3, 3] = rel_pos
+        mesh.apply_transform(T)
 
-        bodies[body_id] = {
-            "file": f"body_{body_id}.glb",
-            "is_fixed": is_fixed,
+        verts = np.array(mesh.vertices)
+        new_verts = np.empty_like(verts)
+        new_verts[:, 0] = verts[:, 0]
+        new_verts[:, 1] = verts[:, 2]
+        new_verts[:, 2] = -verts[:, 1]
+        mesh.vertices = new_verts
+
+        meshes.append(mesh)
+
+    if not meshes:
+        return
+
+    has_texture = any(isinstance(m.visual, trimesh.visual.TextureVisuals) for m in meshes)
+    if has_texture or len(meshes) > 1:
+        scene = trimesh.Scene(meshes)
+        scene.export(str(glb_path), file_type="glb")
+    else:
+        meshes[0].export(str(glb_path), file_type="glb")
+
+    _patch_glb_add_material(str(glb_path))
+
+
+def export_body_glbs(
+    model,
+    data,
+    output_dir: Path,
+    visible_groups: set[int] | None = None,
+):
+    """Export merged GLBs for visible bodies, reusing unchanged meshes by content key."""
+    if visible_groups is None:
+        visible_groups = set(_DEFAULT_VISIBLE_GROUPS)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    body_info: dict[str, dict[str, object]] = {}
+    changed = 0
+    entries = _collect_export_entries(model, data, visible_groups)
+    for entry in entries:
+        body_key = str(entry["body_key"])
+        mesh_key = str(entry["mesh_key"])
+        file_name = f"{_sanitize_export_key(body_key)}__{mesh_key}.glb"
+        glb_path = output_dir / file_name
+        if not glb_path.exists():
+            _export_entry_glb(model, data, entry, glb_path)
+            changed += 1
+
+        body_info[body_key] = {
+            "file": file_name,
+            "url": f"/meshes/{file_name}",
+            "is_fixed": bool(entry["is_fixed"]),
+            "transform_body_id": int(entry["transform_body_id"]),
+            "mesh_key": mesh_key,
         }
 
-    return bodies
+    return body_info, {"changed": changed, "total": len(body_info)}
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +541,10 @@ VR_HTML = """<!DOCTYPE html>
   body { margin: 0; overflow: hidden; background: #1a1a2e; }
   #info { position: absolute; top: 10px; width: 100%; text-align: center;
           color: #fff; font-family: monospace; font-size: 14px; z-index: 1; }
+  #asset-info { position: absolute; top: 10px; left: 10px; z-index: 1;
+          color: #fff; font-family: monospace; font-size: 13px;
+          background: rgba(0, 0, 0, 0.45); padding: 8px 10px; border-radius: 6px;
+          white-space: pre; display: none; }
   #vr-controls { position: absolute; bottom: 20px; width: 100%; text-align: center; z-index: 1;
     display: flex; justify-content: center; gap: 10px; }
   #vr-controls button { position: static !important; transform: none !important; }
@@ -375,6 +552,7 @@ VR_HTML = """<!DOCTYPE html>
 </head>
 <body>
 <div id="info">Connecting...</div>
+<div id="asset-info"></div>
 <div id="vr-controls"></div>
 
 <script type="importmap">
@@ -524,39 +702,138 @@ scene.add(sceneRoot);
 
 // Load body info and meshes via GLTFLoader
 const info = document.getElementById('info');
+const assetInfo = document.getElementById('asset-info');
 const loader = new GLTFLoader();
 const bodyMeshes = {};
-let bodyInfo = null;
+let bodyInfo = {};
+let streamBodyMap = {};
+let sceneVersion = 0;
+let resetRequestPending = false;
 
-async function loadScene() {
+function updateAssetInfo(randomization) {
+  if (!window.__ASSET_DEBUG__) {
+    assetInfo.style.display = 'none';
+    return;
+  }
+  const plate = randomization?.plate_variant || '?';
+  const plateCount = randomization?.plate_count ?? '?';
+  const plateVariants = Array.isArray(randomization?.plate_variants) && randomization.plate_variants.length
+    ? randomization.plate_variants.join(', ')
+    : plate;
+  const rack = randomization?.dish_rack_variant || '?';
+  assetInfo.style.display = 'block';
+  assetInfo.textContent =
+    `Plates (${plateCount}): ${plateVariants}\nRack: ${rack}\nX: next plate\nY: next rack\nB/Space: reset`;
+}
+
+updateAssetInfo(window.__ASSET_DEBUG_STATE__);
+
+function disposeMaterial(material) {
+  if (!material) return;
+  if (Array.isArray(material)) {
+    for (const item of material) disposeMaterial(item);
+    return;
+  }
+  for (const value of Object.values(material)) {
+    if (value && value.isTexture) value.dispose();
+  }
+  material.dispose?.();
+}
+
+function clearSceneMeshes() {
+  for (const bodyKey of Object.keys(bodyMeshes)) {
+    removeBodyMesh(bodyKey);
+  }
+  streamBodyMap = {};
+}
+
+function removeBodyMesh(bodyKey) {
+  const obj = bodyMeshes[bodyKey];
+  if (!obj) return;
+  sceneRoot.remove(obj);
+  obj.traverse((child) => {
+    if (!child.isMesh) return;
+    child.geometry?.dispose();
+    disposeMaterial(child.material);
+  });
+  delete bodyMeshes[bodyKey];
+}
+
+function rebuildStreamBodyMap(nextBodyInfo) {
+  streamBodyMap = {};
+  for (const [bodyKey, bdata] of Object.entries(nextBodyInfo)) {
+    streamBodyMap[String(bdata.transform_body_id)] = bodyKey;
+  }
+}
+
+function applyMocapInit(mocapInit) {
+  if (!mocapInit) return;
+  for (const m of mocapInit) {
+    lastMocapPos[m.id] = new THREE.Vector3(m.pos[0], m.pos[1], m.pos[2]);
+    if (m.quat) {
+      lastMocapQuat[m.id] = new THREE.Quaternion(m.quat[0], m.quat[1], m.quat[2], m.quat[3]);
+    } else {
+      lastMocapQuat[m.id] = new THREE.Quaternion(0, 0, 0, 1);
+    }
+  }
+  _mocapSeeded = true;
+}
+
+function requestSceneReset(source, randomization = null) {
+  if (!ws || ws.readyState !== WebSocket.OPEN || resetRequestPending) return;
+  resetRequestPending = true;
+  info.textContent = `Resetting scene (${source})...`;
+  const message = { type: 'reset', source };
+  if (randomization) {
+    message.randomization = randomization;
+  }
+  ws.send(JSON.stringify(message));
+}
+
+async function loadScene(requestedSceneVersion = null) {
   info.textContent = 'Loading scene...';
 
   const resp = await fetch('/api/bodies');
-  bodyInfo = await resp.json();
-  // Cache bust: append timestamp to mesh URLs
-  const cacheBust = '?t=' + Date.now();
+  const payload = await resp.json();
+  const nextBodyInfo = payload.bodies;
+  sceneVersion = payload.scene_version;
+  if (requestedSceneVersion !== null && requestedSceneVersion !== sceneVersion) {
+    console.warn(`Scene version mismatch: requested ${requestedSceneVersion}, got ${sceneVersion}`);
+  }
+  rebuildStreamBodyMap(nextBodyInfo);
 
-  const total = Object.keys(bodyInfo).length;
+  const nextKeys = new Set(Object.keys(nextBodyInfo));
+  for (const bodyKey of Object.keys(bodyMeshes)) {
+    if (!nextKeys.has(bodyKey)) {
+      removeBodyMesh(bodyKey);
+    }
+  }
+
+  const total = Object.keys(nextBodyInfo).length;
   let loaded = 0;
+  frameCount = 0;
 
-  for (const [bid, bdata] of Object.entries(bodyInfo)) {
+  const orderedKeys = Object.keys(nextBodyInfo).sort();
+  for (const bodyKey of orderedKeys) {
+    const bdata = nextBodyInfo[bodyKey];
+    const prev = bodyInfo[bodyKey];
+    const needsReload = !prev || prev.mesh_key !== bdata.mesh_key || prev.url !== bdata.url;
+    if (!needsReload) continue;
+
+    removeBodyMesh(bodyKey);
     try {
       const gltf = await new Promise((resolve, reject) => {
-        loader.load('/meshes/' + bdata.file + cacheBust, resolve, undefined, reject);
+        loader.load(bdata.url, resolve, undefined, reject);
       });
 
       const obj = gltf.scene;
       obj.traverse((child) => {
         if (child.isMesh) {
-          // Recompute normals — GLB normals are stale after Z-up to Y-up vertex swap
           child.geometry.computeVertexNormals();
 
           if (child.material.map) {
-            // Has a texture map (from GLB) — keep the material as-is
             child.material.side = THREE.DoubleSide;
           } else if (child.geometry.attributes.color) {
-            // Has vertex colors but no texture — replace material entirely
-            // (setting vertexColors on GLTFLoader material doesn't recompile shader)
             child.material = new THREE.MeshStandardMaterial({
               vertexColors: true,
               side: THREE.DoubleSide,
@@ -570,16 +847,21 @@ async function loadScene() {
       });
 
       sceneRoot.add(obj);
-      bodyMeshes[bid] = obj;
+      bodyMeshes[bodyKey] = obj;
       loaded++;
     } catch (e) {
-      console.error(`Failed to load body ${bid}:`, e);
+      console.error(`Failed to load body ${bodyKey}:`, e);
     }
     info.textContent = `Loading meshes: ${loaded}/${total}`;
   }
 
-  info.textContent = `Loaded ${loaded}/${total} bodies. Connecting...`;
-  connectWS();
+  bodyInfo = nextBodyInfo;
+
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    info.textContent = `Loaded ${loaded}/${total} mesh updates. Connecting...`;
+  } else if (!window.__DEBUG__) {
+    info.textContent = '';
+  }
 }
 
 // WebSocket for transform streaming
@@ -595,7 +877,39 @@ function connectWS() {
     info.textContent = 'Connected! Waiting for GELLO...';
   };
 
-  ws.onmessage = (event) => {
+  ws.onmessage = async (event) => {
+    if (typeof event.data === 'string') {
+      let message = null;
+      try {
+        message = JSON.parse(event.data);
+      } catch (err) {
+        console.error('Failed to parse control message:', err);
+        return;
+      }
+
+      if (message.type === 'scene_reload') {
+        applyMocapInit(message.mocap_init);
+        updateAssetInfo(message.randomization);
+        resetRequestPending = false;
+        await loadScene(message.scene_version);
+        return;
+      }
+      if (message.type === 'reset_complete') {
+        applyMocapInit(message.mocap_init);
+        updateAssetInfo(message.randomization);
+        resetRequestPending = false;
+        if (!window.__DEBUG__) {
+          info.textContent = '';
+        }
+        return;
+      }
+      if (message.type === 'reset_error') {
+        resetRequestPending = false;
+        info.textContent = `Reset failed: ${message.error || 'unknown error'}`;
+      }
+      return;
+    }
+
     // Binary format: [n_bodies (uint16), body_id (uint16), px, py, pz, qx, qy, qz, qw (float32) × n]
     const buf = new Float32Array(event.data);
     const n = buf.length / 8;  // 8 floats per body: id(as float), px, py, pz, qx, qy, qz, qw
@@ -611,7 +925,8 @@ function connectWS() {
       const qz = buf[offset + 6];
       const qw = buf[offset + 7];
 
-      const obj = bodyMeshes[bid];
+      const bodyKey = streamBodyMap[bid];
+      const obj = bodyKey ? bodyMeshes[bodyKey] : null;
       if (obj) {
         obj.position.set(px, py, pz);
         obj.quaternion.set(qx, qy, qz, qw);
@@ -628,6 +943,7 @@ function connectWS() {
   };
 
   ws.onclose = () => {
+    resetRequestPending = false;
     info.textContent = 'Disconnected. Reconnecting...';
     setTimeout(connectWS, 1000);
   };
@@ -656,6 +972,18 @@ function getGripButton(handedness) {
   for (const source of session.inputSources) {
     if (source.handedness === handedness && source.gamepad) {
       return source.gamepad.buttons[1] ? source.gamepad.buttons[1].pressed : false;
+    }
+  }
+  return false;
+}
+
+function getFaceButton(handedness, buttonIndex) {
+  const session = renderer.xr.getSession();
+  if (!session) return false;
+  for (const source of session.inputSources) {
+    if (source.handedness === handedness && source.gamepad) {
+      const buttons = source.gamepad.buttons || [];
+      if (buttons[buttonIndex]) return !!buttons[buttonIndex].pressed;
     }
   }
   return false;
@@ -716,79 +1044,67 @@ function updateControllerMocap(handedness, grip, mocapId) {
   }));
 }
 
-// Seed initial mocap positions
+// Seed initial mocap poses
 let _mocapSeeded = false;
+const faceButtonHeld = { rightB: false, leftX: false, leftY: false };
 
-// --- Joystick-based VR rig movement ---
-const moveSpeed = 1.2;   // m/s
-const rotSpeed = 0.8;     // rad/s
-const deadzone = 0.15;
-let prevTime = performance.now();
-
-function applyJoystickMovement(dt) {
-  const session = renderer.xr.getSession();
-  if (!session) return;
-
-  let leftAxes = [0, 0];
-  let rightAxes = [0, 0];
-
-  for (const source of session.inputSources) {
-    if (!source.gamepad) continue;
-    const axes = source.gamepad.axes;  // [0]=x, [1]=y (some have 4 axes: [2]=x, [3]=y)
-    if (source.handedness === 'left') {
-      leftAxes = axes.length >= 4 ? [axes[2], axes[3]] : [axes[0], axes[1]];
-    } else if (source.handedness === 'right') {
-      rightAxes = axes.length >= 4 ? [axes[2], axes[3]] : [axes[0], axes[1]];
-    }
-  }
-
-  // Apply deadzone
-  const lx = Math.abs(leftAxes[0]) > deadzone ? leftAxes[0] : 0;
-  const ly = Math.abs(leftAxes[1]) > deadzone ? leftAxes[1] : 0;
-  const rx = Math.abs(rightAxes[0]) > deadzone ? rightAxes[0] : 0;
-  const ry = Math.abs(rightAxes[1]) > deadzone ? rightAxes[1] : 0;
-
-  if (lx === 0 && ly === 0 && rx === 0 && ry === 0) return;
-
-  // Right stick X: yaw rotation
-  if (rx !== 0) {
-    vrRig.rotation.y += rx * rotSpeed * dt;
-  }
-
-  // Right stick Y: vertical movement
-  if (ry !== 0) {
-    vrRig.position.y -= ry * moveSpeed * dt;
-  }
-
-  // Left stick: XZ movement relative to rig facing direction
-  if (lx !== 0 || ly !== 0) {
-    const forward = new THREE.Vector3(0, 0, -1);
-    forward.applyQuaternion(vrRig.quaternion);
-    forward.y = 0;
-    forward.normalize();
-    const right = new THREE.Vector3(1, 0, 0);
-    right.applyQuaternion(vrRig.quaternion);
-    right.y = 0;
-    right.normalize();
-
-    vrRig.position.addScaledVector(right, lx * moveSpeed * dt);
-    vrRig.position.addScaledVector(forward, -ly * moveSpeed * dt);
-  }
+function assetDebugRequest(extra = {}) {
+  return {
+    randomize_variants: false,
+    randomize_scales: false,
+    ...extra,
+  };
 }
+
+window.addEventListener('keydown', (event) => {
+  if (event.repeat) return;
+  if (event.code === 'Space') {
+    event.preventDefault();
+    if (window.__ASSET_DEBUG__) {
+      requestSceneReset('keyboard', assetDebugRequest());
+    } else {
+      requestSceneReset('keyboard');
+    }
+    return;
+  }
+  if (!window.__ASSET_DEBUG__) return;
+  if (event.code === 'KeyX') {
+    event.preventDefault();
+    requestSceneReset('keyboard_x', assetDebugRequest({ cycle_plate: 1 }));
+    return;
+  }
+  if (event.code === 'KeyY') {
+    event.preventDefault();
+    requestSceneReset('keyboard_y', assetDebugRequest({ cycle_dish_rack: 1 }));
+  }
+});
 
 // Render loop
 renderer.setAnimationLoop(() => {
-  const now = performance.now();
-  const dt = Math.min((now - prevTime) / 1000, 0.1);  // cap to avoid jumps
-  prevTime = now;
-
-  applyJoystickMovement(dt);
   if (!_mocapSeeded && window.__MOCAP_INIT__) {
-    for (const m of window.__MOCAP_INIT__) {
-      lastMocapPos[m.id] = new THREE.Vector3(m.pos[0], m.pos[1], m.pos[2]);
-      lastMocapQuat[m.id] = new THREE.Quaternion(0, 0, 0, 1);
+    applyMocapInit(window.__MOCAP_INIT__);
+  }
+  const rightBPressed = getFaceButton('right', 5);
+  if (rightBPressed && !faceButtonHeld.rightB) {
+    if (window.__ASSET_DEBUG__) {
+      requestSceneReset('controller_b', assetDebugRequest());
+    } else {
+      requestSceneReset('controller_b');
     }
-    _mocapSeeded = true;
+  }
+  faceButtonHeld.rightB = rightBPressed;
+  if (window.__ASSET_DEBUG__) {
+    const leftXPressed = getFaceButton('left', 4);
+    if (leftXPressed && !faceButtonHeld.leftX) {
+      requestSceneReset('controller_x', assetDebugRequest({ cycle_plate: 1 }));
+    }
+    faceButtonHeld.leftX = leftXPressed;
+
+    const leftYPressed = getFaceButton('left', 5);
+    if (leftYPressed && !faceButtonHeld.leftY) {
+      requestSceneReset('controller_y', assetDebugRequest({ cycle_dish_rack: 1 }));
+    }
+    faceButtonHeld.leftY = leftYPressed;
   }
   if (renderer.xr.isPresenting && window.__MOCAP__) {
     updateControllerMocap('left', controllerGrip0, 0);
@@ -803,7 +1119,7 @@ renderer.setAnimationLoop(() => {
   renderer.render(scene, camera);
 });
 
-loadScene();
+loadScene().then(connectWS);
 
 // Recording indicator — fixed sphere at the right end of the aluminum frame in world space.
 // MuJoCo coords (0, -0.65, 0.82) → Three.js world (0.65, 0.82, 0) via Z-up→Y-up +
@@ -834,208 +1150,6 @@ async function updateRecLight() {
 
 
 # ---------------------------------------------------------------------------
-# Scene XML rewriting
-# ---------------------------------------------------------------------------
-
-_FLEXIBLE_TEMPLATE_SCENE = Path(__file__).resolve().parents[1] / "models" / "yam_flexible_chess_scene.xml"
-_FLEXIBLE_MESH_NAMES = ("flexible_base", "linear_module", "soft_tips")
-_FLEXIBLE_BODY_SPECS = (
-    ("left_link_6", {"left_link_left_finger", "left_link_right_finger", "left_flex_gripper"}, "left_flex_gripper"),
-    ("right_link_6", {"right_link_left_finger", "right_link_right_finger", "right_flex_gripper"}, "right_flex_gripper"),
-)
-_FLEXIBLE_EQUALITY_PAIRS = (
-    ("left_left_finger", "left_right_finger"),
-    ("right_left_finger", "right_right_finger"),
-)
-_FLEXIBLE_ACTUATORS = ("left_gripper", "right_gripper")
-_FLEXIBLE_CONTACT_PAIRS = (
-    ("left_flex_gripper", "left_linear_module"),
-    ("left_flex_gripper", "left_linear_module_2"),
-    ("left_linear_module", "left_linear_module_2"),
-    ("right_flex_gripper", "right_linear_module"),
-    ("right_flex_gripper", "right_linear_module_2"),
-    ("right_linear_module", "right_linear_module_2"),
-)
-
-
-def _load_xml_root(xml_or_path: str | Path) -> ET.Element:
-    if isinstance(xml_or_path, Path):
-        return ET.parse(xml_or_path).getroot()
-    return ET.fromstring(xml_or_path)
-
-
-def _xml_to_string(root: ET.Element) -> str:
-    if hasattr(ET, "indent"):
-        ET.indent(root, space="  ")
-    return ET.tostring(root, encoding="unicode")
-
-
-def _replace_named_child(parent: ET.Element, tag: str, name: str, new_child: ET.Element) -> None:
-    for idx, child in enumerate(list(parent)):
-        if child.tag == tag and child.get("name") == name:
-            parent.remove(child)
-            parent.insert(idx, copy.deepcopy(new_child))
-            return
-    parent.append(copy.deepcopy(new_child))
-
-
-def _copy_flexible_mesh_for_scene(root: ET.Element, template_mesh: ET.Element) -> ET.Element:
-    mesh = copy.deepcopy(template_mesh)
-    compiler = root.find("compiler")
-    meshdir = compiler.get("meshdir") if compiler is not None else None
-    file_attr = mesh.get("file")
-    if file_attr and not meshdir and not file_attr.startswith("assets/"):
-        mesh.set("file", f"assets/{file_attr}")
-    return mesh
-
-
-def _apply_flexible_gripper_xml(xml: str) -> str:
-    root = _load_xml_root(xml)
-    template_root = _load_xml_root(_FLEXIBLE_TEMPLATE_SCENE)
-
-    asset = root.find("asset")
-    template_asset = template_root.find("asset")
-    if asset is None or template_asset is None:
-        raise ValueError("Scene XML is missing <asset> section")
-
-    for mesh_name in _FLEXIBLE_MESH_NAMES:
-        for child in list(asset):
-            if child.tag == "mesh" and child.get("name") == mesh_name:
-                asset.remove(child)
-        template_mesh = template_asset.find(f"./mesh[@name='{mesh_name}']")
-        if template_mesh is None:
-            raise ValueError(f"Flexible gripper template is missing mesh '{mesh_name}'")
-        asset.append(_copy_flexible_mesh_for_scene(root, template_mesh))
-
-    for parent_name, remove_names, template_name in _FLEXIBLE_BODY_SPECS:
-        parent = root.find(f".//body[@name='{parent_name}']")
-        template_body = template_root.find(f".//body[@name='{template_name}']")
-        if parent is None or template_body is None:
-            raise ValueError(f"Unable to locate flexible gripper body '{template_name}'")
-        for child in list(parent):
-            if child.tag == "body" and child.get("name") in remove_names:
-                parent.remove(child)
-        parent.append(copy.deepcopy(template_body))
-
-    equality = root.find("equality")
-    template_equality = template_root.find("equality")
-    if equality is None or template_equality is None:
-        raise ValueError("Scene XML is missing <equality> section")
-    for child in list(equality):
-        if child.tag != "joint":
-            continue
-        pair = (child.get("joint1"), child.get("joint2"))
-        if pair in _FLEXIBLE_EQUALITY_PAIRS or pair[::-1] in _FLEXIBLE_EQUALITY_PAIRS:
-            equality.remove(child)
-    for joint1, joint2 in _FLEXIBLE_EQUALITY_PAIRS:
-        template_joint = template_equality.find(f"./joint[@joint1='{joint1}'][@joint2='{joint2}']")
-        if template_joint is None:
-            raise ValueError(f"Flexible gripper template is missing equality joint {joint1}/{joint2}")
-        equality.append(copy.deepcopy(template_joint))
-
-    actuator = root.find("actuator")
-    template_actuator = template_root.find("actuator")
-    if actuator is None or template_actuator is None:
-        raise ValueError("Scene XML is missing <actuator> section")
-    for actuator_name in _FLEXIBLE_ACTUATORS:
-        template_position = template_actuator.find(f"./position[@name='{actuator_name}']")
-        if template_position is None:
-            raise ValueError(f"Flexible gripper template is missing actuator '{actuator_name}'")
-        _replace_named_child(actuator, "position", actuator_name, template_position)
-
-    template_contact = template_root.find("contact")
-    contact = root.find("contact")
-    if template_contact is not None:
-        if contact is None:
-            contact = ET.SubElement(root, "contact")
-        for child in list(contact):
-            if child.tag != "exclude":
-                continue
-            pair = (child.get("body1"), child.get("body2"))
-            if pair in _FLEXIBLE_CONTACT_PAIRS or pair[::-1] in _FLEXIBLE_CONTACT_PAIRS:
-                contact.remove(child)
-        seen_pairs: set[tuple[str | None, str | None]] = set()
-        for exclude in template_contact.findall("./exclude"):
-            pair = (exclude.get("body1"), exclude.get("body2"))
-            if pair not in _FLEXIBLE_CONTACT_PAIRS or pair in seen_pairs:
-                continue
-            contact.append(copy.deepcopy(exclude))
-            seen_pairs.add(pair)
-
-    return _xml_to_string(root)
-
-
-def _apply_clean_xml(xml: str) -> str:
-    xml = re.sub(r'<geom[^>]*name="floor"[^/]*/>', '', xml)
-    xml = re.sub(r'<geom[^>]*name="back_wall"[^/]*/>', '', xml, flags=re.DOTALL)
-    xml = re.sub(r'<geom[^>]*name="left_wall"[^/]*/>', '', xml, flags=re.DOTALL)
-    xml = re.sub(r'<geom[^>]*name="right_wall"[^/]*/>', '', xml, flags=re.DOTALL)
-    xml = re.sub(r'<geom[^>]*mesh="base_visual_gate"[^/]*/>', '', xml, flags=re.DOTALL)
-    pos = xml.find('<body name="gate_collision"')
-    if pos >= 0:
-        depth, i = 0, pos
-        while i < len(xml):
-            if xml[i:i+5] == '<body':
-                depth += 1
-            if xml[i:i+7] == '</body>':
-                depth -= 1
-                if depth == 0:
-                    xml = xml[:pos] + xml[i+7:]
-                    break
-            i += 1
-    for cam in ['overhead_camera', 'left_side_camera', 'right_side_camera']:
-        xml = re.sub(rf'<body name="{cam}"[^>]*>.*?</body>', '', xml, flags=re.DOTALL)
-    print("Clean mode: removed cage, walls, floor, cameras")
-    return xml
-
-
-def _apply_mocap_xml(xml: str, *, debug: bool) -> str:
-    left_mocap_geom = ""
-    right_mocap_geom = ""
-    if debug:
-        left_mocap_geom = '\n      <geom type="box" size="0.02 0.02 0.02" contype="0" conaffinity="0" rgba="0.2 0.9 0.2 0.3" group="2"/>'
-        right_mocap_geom = '\n      <geom type="box" size="0.02 0.02 0.02" contype="0" conaffinity="0" rgba="0.9 0.2 0.2 0.3" group="2"/>'
-    mocap_xml = f"""
-    <!-- Mocap targets for VR controller arm control -->
-    <body mocap="true" name="left_mocap" pos="0.6295 0.3100 1.1426" quat="1 0 0 0">
-      <site name="left_mocap_site" size="0.01" type="sphere" rgba="0.2 0.9 0.2 0.5"/>{left_mocap_geom}
-    </body>
-    <body mocap="true" name="right_mocap" pos="0.6295 -0.3100 1.1426" quat="1 0 0 0">
-      <site name="right_mocap_site" size="0.01" type="sphere" rgba="0.9 0.2 0.2 0.5"/>{right_mocap_geom}
-    </body>
-"""
-    xml = xml.replace('</worldbody>', mocap_xml + '  </worldbody>')
-    weld_xml = '    <weld name="left_mocap_weld" site1="left_mocap_site" site2="left_grasp_site"/>\n    <weld name="right_mocap_weld" site1="right_mocap_site" site2="right_grasp_site"/>\n'
-    if '<equality>' in xml:
-        xml = xml.replace('</equality>', weld_xml + '  </equality>')
-    else:
-        xml = xml.replace('</worldbody>', '</worldbody>\n  <equality>\n' + weld_xml + '  </equality>')
-    print("Mocap mode: added mocap bodies + weld constraints")
-    return xml
-
-
-def _build_scene_xml(
-    scene_path: Path,
-    *,
-    clean: bool,
-    mocap: bool,
-    flexible_gripper: bool,
-    debug: bool,
-) -> str:
-    with open(scene_path) as f:
-        xml = f.read()
-
-    if flexible_gripper:
-        xml = _apply_flexible_gripper_xml(xml)
-        print("Flexible gripper mode: swapped in flexible gripper assembly")
-    if clean:
-        xml = _apply_clean_xml(xml)
-    if mocap:
-        xml = _apply_mocap_xml(xml, debug=debug)
-    return xml
-
-
-# ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
 
@@ -1044,7 +1158,10 @@ def main():
     parser.add_argument("--task", type=str, default="blocks",
                         choices=["bottles", "marker", "ball_sorting", "empty",
                                  "dishrack", "chess", "blocks",
-                                 "mug_tree", "mug_flip", "jenga", "building_blocks", "sweep", "drawer", "pour"])
+                                 "mug_tree", "mug_flip", "jenga", "building_blocks", "sweep", "drawer", "pour",
+                                 "inhand_transfer"])
+    parser.add_argument("--xml", type=str, default=None,
+                        help="Load an explicit MuJoCo XML file as-is instead of the built-in task XML")
     parser.add_argument("--port", type=int, default=8012)
     parser.add_argument("--left-leader", type=str, default="left")
     parser.add_argument("--right-leader", type=str, default="right")
@@ -1053,6 +1170,18 @@ def main():
                         help="Rate to stream transforms to VR client")
     parser.add_argument("--debug", action="store_true",
                         help="Show frame counter overlay in VR client")
+    parser.add_argument(
+        "--visible-groups",
+        type=str,
+        nargs="+",
+        default=None,
+        metavar="GROUP",
+        help=(
+            "MuJoCo geom groups to export into the VR scene. "
+            "Accepts space- or comma-separated integers in [0, 5], or 'all'. "
+            "Default: 0 1 2"
+        ),
+    )
     parser.add_argument("--vr-pos", type=float, nargs=3, default=[0.0, 0.0, 0.0],
                         metavar=("X", "Y", "Z"),
                         help="VR user floor position in Y-up coords (default: 0 0 -1)")
@@ -1065,56 +1194,149 @@ def main():
                         help="Swap the standard YAM finger bodies for the flexible gripper assembly at launch.")
     parser.add_argument("--mocap", action="store_true",
                         help="Control arms with VR controllers via mocap weld constraints instead of GELLO")
+    parser.add_argument(
+        "--asset-debug",
+        action="store_true",
+        help=(
+            "Dishrack-only debug mode: keep asset variants pinned on reset and map "
+            "X/Y to cycle plate and rack variants."
+        ),
+    )
     args = parser.parse_args()
+    try:
+        visible_groups = set(_parse_visible_groups_arg(args.visible_groups))
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.asset_debug and args.task != "dishrack":
+        parser.error("--asset-debug is currently only supported for task='dishrack'")
 
     import xdof_sim
-    from xdof_sim.env import _SCENE_XMLS
+    from xdof_sim.task_registry import get_task_scene_xml
 
+    custom_xml = Path(args.xml).resolve() if args.xml else None
+    if custom_xml is not None and not custom_xml.exists():
+        raise SystemExit(f"XML file not found: {custom_xml}")
+
+    transform_options = SceneXmlTransformOptions(
+        clean=args.clean,
+        mocap=args.mocap,
+        flexible_gripper=args.flexible_gripper,
+        debug=args.debug,
+    )
     need_xml_edit = args.clean or args.mocap or args.flexible_gripper
-    if need_xml_edit:
-        scene_path = _SCENE_XMLS.get(args.task)
-        xml = _build_scene_xml(
-            scene_path,
-            clean=args.clean,
-            mocap=args.mocap,
-            flexible_gripper=args.flexible_gripper,
-            debug=args.debug,
+    if args.task == "inhand_transfer":
+        if custom_xml is not None:
+            raise SystemExit("--xml is not supported for task 'inhand_transfer'")
+        if transform_options.flexible_gripper:
+            print("Flexible gripper mode: swapped in flexible gripper assembly")
+        if transform_options.clean:
+            print("Clean mode: removed cage, walls, floor, cameras")
+        if transform_options.mocap:
+            print("Mocap mode: added mocap bodies + weld constraints")
+        env = xdof_sim.make_env(
+            scene="hybrid",
+            task=args.task,
+            render_cameras=False,
+            scene_xml_transform_options=transform_options,
         )
-
-        from xdof_sim import env as _env_mod
-        orig_xmls = _env_mod._SCENE_XMLS.copy()
-        tmp_path = scene_path.parent / f".vr_streamer_{args.task}_{os.getpid()}.xml"
-        try:
-            tmp_path.write_text(xml)
-            _env_mod._SCENE_XMLS[args.task] = tmp_path
-            env = xdof_sim.make_env(scene="hybrid", task=args.task, render_cameras=False)
-        finally:
-            _env_mod._SCENE_XMLS = orig_xmls
-            tmp_path.unlink(missing_ok=True)
+    elif custom_xml is not None:
+        env = xdof_sim.make_env(
+            scene="hybrid",
+            task=args.task,
+            render_cameras=False,
+            scene_xml=custom_xml,
+        )
+    elif need_xml_edit:
+        scene_path = get_task_scene_xml(args.task)
+        if scene_path is None:
+            raise SystemExit(f"Unknown task scene: {args.task}")
+        xml, applied_edits = build_scene_xml(
+            scene_path,
+            options=transform_options,
+        )
+        if "flexible_gripper" in applied_edits:
+            print("Flexible gripper mode: swapped in flexible gripper assembly")
+        if "clean" in applied_edits:
+            print("Clean mode: removed cage, walls, floor, cameras")
+        if "mocap" in applied_edits:
+            print("Mocap mode: added mocap bodies + weld constraints")
+        env = xdof_sim.make_env(
+            scene="hybrid",
+            task=args.task,
+            render_cameras=False,
+            scene_xml_string=xml,
+            scene_xml_transform_options=transform_options,
+        )
     else:
         env = xdof_sim.make_env(scene="hybrid", task=args.task, render_cameras=False)
 
-    model = env.model
-    data = env.data
+    initial_reset_options = None
+    if args.asset_debug:
+        initial_reset_options = {
+            "randomization": {
+                "randomize_variants": False,
+                "randomize_scales": False,
+            }
+        }
+
+    # Reset once up front so the live model matches the first randomization.
+    obs, _ = env.reset(options=initial_reset_options)
+    state = obs["state"].copy()
 
     print(f"Task: {args.task}")
-    print(f"Environment: nbody={model.nbody}, ngeom={model.ngeom}")
+    print(f"Environment: nbody={env.model.nbody}, ngeom={env.model.ngeom}")
 
-    # Export meshes (clean dir to avoid stale files from other tasks)
+    # Export meshes into a content-addressed cache so resets only add new GLBs.
     import shutil
-    mesh_dir = Path("/tmp/xdof_vr_meshes")
-    if mesh_dir.exists():
-        shutil.rmtree(mesh_dir)
-    body_info = export_body_glbs(model, mesh_dir)
+    mesh_root = Path("/tmp/xdof_vr_meshes")
+    if mesh_root.exists():
+        shutil.rmtree(mesh_root)
+    mesh_root.mkdir(parents=True, exist_ok=True)
+    scene_state: dict[str, object] = {
+        "version": 0,
+        "body_info": {},
+        "stream_items": [],
+    }
 
-    fixed_ids = [bid for bid, info in body_info.items() if info["is_fixed"]]
-    dynamic_ids = [bid for bid, info in body_info.items() if not info["is_fixed"]]
-    all_ids = list(body_info.keys())
-    print(f"Exported {len(body_info)} body meshes ({len(fixed_ids)} fixed, {len(dynamic_ids)} dynamic)")
+    def current_model() -> mujoco.MjModel:
+        return env.model
 
-    # Reset
-    obs, _ = env.reset()
-    state = obs["state"].copy()
+    def current_data() -> mujoco.MjData:
+        return env.data
+
+    def export_current_scene_meshes() -> None:
+        version = int(scene_state["version"]) + 1
+        body_info, stats = export_body_glbs(
+            current_model(),
+            current_data(),
+            mesh_root,
+            visible_groups=visible_groups,
+        )
+        scene_state["version"] = version
+        scene_state["body_info"] = body_info
+        scene_state["stream_items"] = [
+            (body_key, int(info["transform_body_id"]))
+            for body_key, info in sorted(body_info.items())
+        ]
+        fixed_ids = [body_key for body_key, info in body_info.items() if info["is_fixed"]]
+        dynamic_ids = [body_key for body_key, info in body_info.items() if not info["is_fixed"]]
+        print(
+            f"Exported scene meshes v{version}: {stats['changed']} changed / {stats['total']} bodies "
+            f"({len(fixed_ids)} fixed, {len(dynamic_ids)} dynamic)"
+        )
+
+    export_current_scene_meshes()
+    print(f"Visible geom groups: {sorted(visible_groups)}")
+
+    task_spec = getattr(env, "_task_spec", None)
+    task_evaluator = getattr(env, "_task_evaluator", None)
+    task_dashboard = TaskEvalDashboardState(
+        task_name=args.task,
+        prompt=(task_spec.prompt if task_spec is not None else env.prompt),
+        evaluator_name=(task_spec.evaluator_name if task_spec is not None else None),
+        debug_spec=(task_evaluator.debug_spec() if task_evaluator is not None else None),
+    )
+    task_dashboard.update(step=0, sim_time=float(current_data().time), result=env.evaluate_task())
 
     # ZMQ
     zmq_context = zmq.Context()
@@ -1137,8 +1359,11 @@ def main():
 
     def build_frame_buffer():
         """Pack all body transforms into a flat float32 buffer (Y-up)."""
-        buf = np.zeros(len(all_ids) * 8, dtype=np.float32)
-        for i, bid in enumerate(all_ids):
+        model = current_model()
+        data = current_data()
+        stream_items = list(scene_state["stream_items"])
+        buf = np.zeros(len(stream_items) * 8, dtype=np.float32)
+        for i, (_, bid) in enumerate(stream_items):
             xpos = data.xpos[bid]
             xmat = data.xmat[bid].reshape(3, 3)
             pos_yup = R_conv @ xpos
@@ -1160,38 +1385,128 @@ def main():
     connected = [False]
     step_count = [0]
     frame_bytes = [build_frame_buffer()]
+    pending_reset_request: list[dict[str, object] | None] = [None]
+    pending_client_events: queue.SimpleQueue[dict[str, object]] = queue.SimpleQueue()
 
     # Mocap control state
     pending_mocap_updates = []
     pending_trigger = [None]
     R_inv = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=float)  # Y-up to Z-up
 
-    # Find gripper actuator IDs for trigger control
-    gripper_ids = {}
-    if args.mocap:
+    def find_gripper_ids(model: mujoco.MjModel) -> dict[str, tuple[int, float, float]]:
+        gripper_ids: dict[str, tuple[int, float, float]] = {}
+        if not args.mocap:
+            return gripper_ids
         for i in range(model.nu):
             aname = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, i) or ""
             if "left_gripper" in aname:
-                jid = model.actuator_trnid[i][0]
                 lo, hi = model.actuator_ctrlrange[i]
                 gripper_ids["left"] = (i, lo, hi)
             elif "right_gripper" in aname:
-                jid = model.actuator_trnid[i][0]
                 lo, hi = model.actuator_ctrlrange[i]
                 gripper_ids["right"] = (i, lo, hi)
-        print(f"Mocap gripper IDs: {gripper_ids}")
+        return gripper_ids
+
+    gripper_ids = [find_gripper_ids(current_model())]
+    if args.mocap:
+        print(f"Mocap gripper IDs: {gripper_ids[0]}")
+
+    def build_mocap_init_payload() -> list[dict[str, object]]:
+        model = current_model()
+        data = current_data()
+        mocap_init: list[dict[str, object]] = []
+        for i in range(model.nmocap):
+            p = R_conv @ data.mocap_pos[i]
+            q_wxyz = data.mocap_quat[i]
+            mat_zup = Rotation.from_quat([q_wxyz[1], q_wxyz[2], q_wxyz[3], q_wxyz[0]]).as_matrix()
+            mat_yup = R_conv @ mat_zup @ R_conv.T
+            q_yup = Rotation.from_matrix(mat_yup).as_quat()  # xyzw
+            mocap_init.append(
+                {
+                    "id": i,
+                    "pos": [float(p[0]), float(p[1]), float(p[2])],
+                    "quat": [float(q_yup[0]), float(q_yup[1]), float(q_yup[2]), float(q_yup[3])],
+                }
+            )
+        return mocap_init
+
+    def current_randomization_metadata() -> dict[str, object] | None:
+        randomization_state = getattr(env, "_last_randomization", None)
+        metadata = getattr(randomization_state, "metadata", None)
+        if not isinstance(metadata, dict):
+            return None
+
+        plate_variant = metadata.get("plate_variant")
+        plate_variants = metadata.get("plate_variants")
+        plate_count = metadata.get("plate_count")
+        dish_rack_variant = metadata.get("dish_rack_variant")
+        if plate_variant is None and dish_rack_variant is None and plate_count is None:
+            return None
+        return {
+            "plate_variant": str(plate_variant or ""),
+            "plate_variants": [str(value) for value in plate_variants] if isinstance(plate_variants, (list, tuple)) else [],
+            "plate_count": int(plate_count) if plate_count is not None else None,
+            "dish_rack_variant": str(dish_rack_variant or ""),
+        }
+
+    def queue_client_event(event_type: str, *, error: str | None = None) -> None:
+        event: dict[str, object] = {
+            "type": event_type,
+            "scene_version": int(scene_state["version"]),
+        }
+        randomization_metadata = current_randomization_metadata()
+        if randomization_metadata is not None:
+            event["randomization"] = randomization_metadata
+        if args.mocap:
+            event["mocap_init"] = build_mocap_init_payload()
+        if error is not None:
+            event["error"] = error
+        pending_client_events.put(event)
+
+    def reset_scene(randomization_request: dict[str, object] | None = None) -> None:
+        nonlocal state
+        previous_model = current_model()
+        options = None
+        if randomization_request:
+            options = {"randomization": dict(randomization_request)}
+        obs, _ = env.reset(
+            seed=int(time.time_ns() % (2**31 - 1)),
+            options=options,
+        )
+        state = obs["state"].copy()
+        step_count[0] = 0
+        gripper_ids[0] = find_gripper_ids(current_model())
+        if current_model() is not previous_model:
+            export_current_scene_meshes()
+            queue_client_event("scene_reload")
+        else:
+            queue_client_event("reset_complete")
+        frame_bytes[0] = build_frame_buffer()
+        task_dashboard.update(step=0, sim_time=float(current_data().time), result=env.evaluate_task())
 
     def physics_loop():
         nonlocal state
         dt = 1.0 / args.control_rate
-        n_substeps = max(1, round(dt / model.opt.timestep))
 
         while True:
             t0 = time.time()
 
+            if pending_reset_request[0] is not None:
+                with lock:
+                    reset_request = pending_reset_request[0]
+                    pending_reset_request[0] = None
+                    try:
+                        reset_scene(reset_request)
+                    except Exception as exc:
+                        queue_client_event("reset_error", error=str(exc))
+                        print(f"Scene reset failed: {exc}")
+
             if args.mocap:
                 # Apply mocap updates from VR controllers
                 with lock:
+                    model = current_model()
+                    data = current_data()
+                    n_substeps = max(1, round(dt / model.opt.timestep))
                     while pending_mocap_updates:
                         update = pending_mocap_updates.pop(0)
                         mid = update.get("mocap_id", -1)
@@ -1212,7 +1527,7 @@ def main():
                     if trig:
                         pending_trigger[0] = None
                         for side in ["left", "right"]:
-                            info = gripper_ids.get(side)
+                            info = gripper_ids[0].get(side)
                             if info:
                                 aid, lo, hi = info
                                 val = 1.0 - trig.get(side, 0)
@@ -1229,6 +1544,11 @@ def main():
                     for _ in range(n_substeps):
                         mujoco.mj_step(model, data)
                     state = env.get_obs()["state"].copy()
+                    task_dashboard.update(
+                        step=step_count[0] + 1,
+                        sim_time=float(data.time),
+                        result=env.evaluate_task(),
+                    )
                     frame_bytes[0] = build_frame_buffer()
                 step_count[0] += 1
             else:
@@ -1248,8 +1568,14 @@ def main():
                         action[7:14] = right_pos[:7]
 
                     with lock:
+                        data = current_data()
                         env._step_single(action)
                         state = env.get_obs()["state"].copy()
+                        task_dashboard.update(
+                            step=step_count[0] + 1,
+                            sim_time=float(data.time),
+                            result=env.evaluate_task(),
+                        )
                         frame_bytes[0] = build_frame_buffer()
                     step_count[0] += 1
 
@@ -1272,27 +1598,34 @@ def main():
             config_script += 'window.__DEBUG__ = true;'
         config_script += f'window.__VR_POS__ = {args.vr_pos};'
         config_script += f'window.__VR_TARGET__ = {args.vr_target};'
+        if args.asset_debug:
+            config_script += 'window.__ASSET_DEBUG__ = true;'
+            config_script += (
+                f'window.__ASSET_DEBUG_STATE__ = {json.dumps(current_randomization_metadata())};'
+            )
         if args.mocap:
             config_script += 'window.__MOCAP__ = true;'
-            # Send initial mocap positions in Y-up coords
-            mocap_init = []
-            for i in range(model.nmocap):
-                p = R_conv @ data.mocap_pos[i]
-                mocap_init.append(f'{{id:{i},pos:[{p[0]:.4f},{p[1]:.4f},{p[2]:.4f}]}}')
-            config_script += f'window.__MOCAP_INIT__ = [{",".join(mocap_init)}];'
+            config_script += f'window.__MOCAP_INIT__ = {json.dumps(build_mocap_init_payload())};'
         config_script += '</script>'
         html = VR_HTML.replace('</head>', config_script + '</head>')
         return web.Response(text=html, content_type="text/html")
 
     async def handle_bodies(request):
         return web.json_response({
-            str(k): {"file": v["file"], "is_fixed": bool(v["is_fixed"])}
-            for k, v in body_info.items()
+            "scene_version": int(scene_state["version"]),
+            "bodies": dict(scene_state["body_info"]),
         })
+
+    async def handle_task_debug(request):
+        return web.Response(text=TASK_DASHBOARD_HTML, content_type="text/html")
+
+    async def handle_task_eval(request):
+        history_tail = int(request.query.get("history", "256"))
+        return web.json_response(task_dashboard.snapshot(history_tail=history_tail))
 
     async def handle_mesh(request):
         filename = request.match_info["filename"]
-        path = mesh_dir / filename
+        path = mesh_root / filename
         if not path.exists():
             return web.Response(status=404)
         return web.FileResponse(path, headers={
@@ -1309,13 +1642,19 @@ def main():
 
         try:
             async for msg in ws:
-                if msg.type == web.WSMsgType.TEXT and args.mocap:
+                if msg.type == web.WSMsgType.TEXT:
                     import json
                     try:
                         d = json.loads(msg.data)
-                        if d.get("type") == "mocap":
+                        if d.get("type") == "reset":
+                            randomization_request = d.get("randomization")
+                            if randomization_request is not None and not isinstance(randomization_request, dict):
+                                raise ValueError("reset.randomization must be an object")
+                            pending_reset_request[0] = dict(randomization_request or {})
+                            print(f"Scene reset requested via {d.get('source', 'client')}")
+                        elif d.get("type") == "mocap" and args.mocap:
                             pending_mocap_updates.append(d)
-                        elif d.get("type") == "trigger":
+                        elif d.get("type") == "trigger" and args.mocap:
                             pending_trigger[0] = d
                     except Exception:
                         pass
@@ -1329,7 +1668,19 @@ def main():
         """Broadcast transforms to all connected WebSocket clients."""
         dt = 1.0 / args.stream_rate
         while True:
+            events: list[dict[str, object]] = []
+            while True:
+                try:
+                    events.append(pending_client_events.get_nowait())
+                except queue.Empty:
+                    break
             if ws_clients:
+                for event in events:
+                    for ws in list(ws_clients):
+                        try:
+                            await ws.send_str(json.dumps(event))
+                        except Exception:
+                            pass
                 with lock:
                     data_bytes = frame_bytes[0]
                 for ws in list(ws_clients):
@@ -1343,12 +1694,15 @@ def main():
         asyncio.create_task(stream_loop())
 
     app_web.router.add_get("/", handle_index)
+    app_web.router.add_get("/debug", handle_task_debug)
+    app_web.router.add_get("/api/task-eval", handle_task_eval)
     app_web.router.add_get("/api/bodies", handle_bodies)
     app_web.router.add_get("/meshes/{filename}", handle_mesh)
     app_web.router.add_get("/ws", handle_ws)
     app_web.on_startup.append(on_startup)
 
     print(f"\nVR Streaming Server: http://0.0.0.0:{args.port}")
+    print(f"Task debug dashboard: http://0.0.0.0:{args.port}/debug")
     print(f"VR position: {args.vr_pos}, looking at: {args.vr_target}")
     print(f"Open in VR headset browser to connect")
     print(f"Waiting for GELLO leaders on '{args.left_leader}' and '{args.right_leader}'...")

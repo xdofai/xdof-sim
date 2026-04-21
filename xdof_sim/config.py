@@ -1,5 +1,8 @@
 """Robot and camera configuration dataclasses for the YAM bimanual system."""
 
+import copy
+import json
+import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -133,6 +136,13 @@ def get_i2rt_sim_config() -> RobotSystemConfig:
     config = _base_config()
     for robot in config.robots.values():
         robot.follower.use_sim = True
+    init_q_json = os.environ.get("DEPLOY_INIT_Q")
+    if init_q_json:
+        init_q = json.loads(init_q_json)
+        robot_names = list(config.robots.keys())
+        dof = len(init_q) // len(robot_names)
+        for i, name in enumerate(robot_names):
+            config.robots[name].init_q = list(init_q[i * dof : (i + 1) * dof])
     return config
 
 
@@ -148,7 +158,7 @@ def get_viser_ik_config() -> RobotSystemConfig:
     The default sim config uses the bbox station's asymmetric init_q
     which is calibrated for real-robot replay.
     """
-    config = get_i2rt_sim_config()
+    config = copy.deepcopy(get_i2rt_sim_config())
     for robot in config.robots.values():
         robot.init_q = list(_FLAT_INIT_Q)
     return config
