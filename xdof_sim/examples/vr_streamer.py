@@ -1508,14 +1508,18 @@ def main():
         plate_variants = metadata.get("plate_variants")
         plate_count = metadata.get("plate_count")
         dish_rack_variant = metadata.get("dish_rack_variant")
-        if plate_variant is None and dish_rack_variant is None and plate_count is None:
+        trash_count = metadata.get("trash_count")
+        if plate_variant is None and dish_rack_variant is None and plate_count is None and trash_count is None:
             return None
-        return {
+        payload = {
             "plate_variant": str(plate_variant or ""),
             "plate_variants": [str(value) for value in plate_variants] if isinstance(plate_variants, (list, tuple)) else [],
             "plate_count": int(plate_count) if plate_count is not None else None,
             "dish_rack_variant": str(dish_rack_variant or ""),
         }
+        if trash_count is not None:
+            payload["trash_count"] = int(trash_count)
+        return payload
 
     def queue_client_event(event_type: str, *, error: str | None = None) -> None:
         event: dict[str, object] = {

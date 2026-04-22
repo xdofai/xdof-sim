@@ -52,8 +52,19 @@ class SweepRandomizerTests(unittest.TestCase):
                 "trash_4_jnt",
                 "trash_5_jnt",
                 "trash_6_jnt",
+                "trash_7_jnt",
             },
         )
+        trash_count = int(state.metadata["trash_count"])
+        active_trash_joints = list(state.metadata["trash_joints"])
+        inactive_trash_joints = [
+            joint_name
+            for joint_name in SweepRandomizer._all_trash_joints
+            if joint_name not in active_trash_joints
+        ]
+        self.assertGreaterEqual(trash_count, SweepRandomizer.min_trash_count)
+        self.assertLessEqual(trash_count, SweepRandomizer.max_trash_count)
+        self.assertEqual(len(active_trash_joints), trash_count)
 
         brush_jnt_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "brush_jnt")
         brush_qadr = int(model.jnt_qposadr[brush_jnt_id])
@@ -62,7 +73,7 @@ class SweepRandomizerTests(unittest.TestCase):
         self.assertFalse(np.allclose(brush_randomized, brush_nominal))
 
         trash_xy = np.array(
-            [state.object_states[f"trash_{i}_jnt"]["pos"][:2] for i in range(1, 7)],
+            [state.object_states[joint_name]["pos"][:2] for joint_name in active_trash_joints],
             dtype=np.float64,
         )
         span = trash_xy.max(axis=0) - trash_xy.min(axis=0)
@@ -70,7 +81,7 @@ class SweepRandomizerTests(unittest.TestCase):
         self.assertLess(float(span[1]), 0.35)
 
         trash_quats = np.array(
-            [state.object_states[f"trash_{i}_jnt"]["quat"] for i in range(1, 7)],
+            [state.object_states[joint_name]["quat"] for joint_name in active_trash_joints],
             dtype=np.float64,
         )
         self.assertTrue(
@@ -78,11 +89,52 @@ class SweepRandomizerTests(unittest.TestCase):
             msg="expected at least one trash object to receive non-planar orientation randomization",
         )
 
-        for obj_state in state.object_states.values():
+        for joint_name in ("brush_jnt", "bin_joint", "dustpan_jnt", *active_trash_joints):
+            obj_state = state.object_states[joint_name]
             self.assertGreaterEqual(obj_state["pos"][0], 0.36)
             self.assertLessEqual(obj_state["pos"][0], 0.82)
             self.assertGreaterEqual(obj_state["pos"][1], -0.55)
             self.assertLessEqual(obj_state["pos"][1], 0.55)
+
+        for joint_name in inactive_trash_joints:
+            self.assertLess(state.object_states[joint_name]["pos"][2], 0.0)
+
+    def test_sweep_randomizer_keeps_trash_outside_tool_keepout_radius(self) -> None:
+        scene_path = Path(__file__).resolve().parents[1] / "xdof_sim" / "models" / "yam_sweep_scene.xml"
+        model = mujoco.MjModel.from_xml_path(str(scene_path))
+        data = mujoco.MjData(model)
+        randomizer = SweepRandomizer()
+
+        for seed in range(10):
+            mujoco.mj_resetData(model, data)
+            mujoco.mj_forward(model, data)
+            state = randomizer.randomize(model, data, seed=seed)
+
+            for trash_name in state.metadata["trash_joints"]:
+                trash_xy = np.asarray(state.object_states[trash_name]["pos"][:2], dtype=np.float64)
+                self.assertTrue(
+                    randomizer._tool_keepout_ok(
+                        trash_xy,
+                        states=state.object_states,
+                    ),
+                    msg=f"{trash_name} landed inside the sampled brush/dustpan keep-out footprint for seed {seed}",
+                )
+
+    def test_sweep_randomizer_randomizes_trash_count_between_two_and_four(self) -> None:
+        scene_path = Path(__file__).resolve().parents[1] / "xdof_sim" / "models" / "yam_sweep_scene.xml"
+        model = mujoco.MjModel.from_xml_path(str(scene_path))
+        data = mujoco.MjData(model)
+        randomizer = SweepRandomizer()
+
+        observed_counts: set[int] = set()
+        for seed in range(24):
+            mujoco.mj_resetData(model, data)
+            mujoco.mj_forward(model, data)
+            state = randomizer.randomize(model, data, seed=seed)
+            observed_counts.add(int(state.metadata["trash_count"]))
+
+        self.assertTrue(observed_counts.issubset({2, 3, 4}))
+        self.assertGreaterEqual(len(observed_counts), 2)
 
 
 class DishRackVariantRandomizationTests(unittest.TestCase):

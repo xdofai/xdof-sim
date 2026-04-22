@@ -122,10 +122,13 @@ def _label_text(task: str, frame_idx: int, total_frames: int, camera_name: str, 
             extra_lines.append(line)
         plate_variant = metadata.get("plate_variant")
         rack_variant = metadata.get("dish_rack_variant")
+        trash_count = metadata.get("trash_count")
         if plate_variant:
             extra_lines.append(f"plate={plate_variant}")
         if rack_variant:
             extra_lines.append(f"rack={_format_rack_variant_label(rack_variant)}")
+        if trash_count is not None:
+            extra_lines.append(f"trash_count={int(trash_count)}")
     return "\n".join([header, *extra_lines])
 
 
