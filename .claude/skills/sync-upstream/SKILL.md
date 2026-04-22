@@ -43,7 +43,7 @@ This skill is built for **fork-by-copy repos** — forks created by copying a sn
      --invert-grep --grep="^Sync upstream" --grep="^Initial commit" \
      | sort -u
    ```
-   (Extend the `--grep` list if the repo uses other auto-sync commit prefixes.)
+   (Extend the `--grep` list if the repo uses other auto-sync commit prefixes. Do NOT pipe through `head` — enumerate the full set.)
 
    Then partition the `M` set:
    - **Real conflicts** = M ∩ files-with-real-local-edits
@@ -57,29 +57,49 @@ This skill is built for **fork-by-copy repos** — forks created by copying a sn
    - N local-only files (will be preserved)
    - N real conflicts (need review) — list these by name
 
-7. **Show each real conflict as a clean local delta**, not a pairwise HEAD↔upstream diff (which includes all unrelated upstream churn). For each real-conflict file `<f>`:
+7. **Compute the full fork-local delta per conflict file**. For each real-conflict file `<f>`:
    ```bash
-   LAST_SYNC=$(git log --format=%H --grep="^Sync upstream" -- <f> | head -1)
-   git diff "$LAST_SYNC" HEAD -- <f>
+   git diff <remote>/<branch> HEAD -- <f>
    ```
-   This is the pure local delta — what was added on top of the last-synced upstream version. It's what needs to be re-applied after overwriting with upstream.
+   Read the hunks as:
+   - `+` lines = in HEAD, missing from upstream → **fork-local; must preserve**
+   - `-` lines = in upstream, missing from HEAD → upstream additions we'll gain after checkout
 
-   For each conflict, propose a resolution to the user (most commonly: "apply upstream's version, then re-append these N lines at `<anchor>`") and wait for confirmation.
+   This diff shows the **total** fork-local delta, not just what was added since the last sync. That matters because fork-local features can be introduced BEFORE a later sync commit that didn't happen to touch the file, and a "last sync → HEAD" diff will silently miss them. (Real incident: the joystick feature in `vr_streamer.py` was added in commits predating the last sync touching that file, so `git diff LAST_SYNC HEAD -- <f>` reported only the newer recording-indicator delta. The joystick block was dropped on the next sync. Post-mortem commit: `9b6244d`.)
 
-8. **Apply**:
+   Enumerate each local hunk to the user and propose a resolution ("apply upstream, then re-append these N lines at `<anchor>`") — wait for confirmation before moving on.
+
+8. **Collect fork-local symbols for post-checkout verification**. For each real-conflict file, extract distinctive symbols introduced by non-sync local commits:
+   ```bash
+   for sha in $(git log --format=%H \
+                 --invert-grep --grep="^Sync upstream" --grep="^Initial commit" \
+                 -- <f>); do
+     git show "$sha" -- <f> | grep '^+' | grep -oE '[A-Za-z_][A-Za-z0-9_]{8,}'
+   done | sort -u > /tmp/fork_symbols_<f>.txt
+   ```
+   Tune the regex per language if needed (e.g. lower the min-length for short Python identifiers). Keep the list short and distinctive — function/class/flag names, not boilerplate.
+
+9. **Apply**:
    ```bash
    git checkout <remote>/<branch> -- .
    ```
-   This overwrites every file present in upstream's tree in one shot — both safe updates and drift. Local-only files are untouched because they don't exist in upstream. Then re-apply each confirmed local delta from step 7.
+   This overwrites every file present in upstream's tree in one shot — both safe updates and drift. Local-only files are untouched because they don't exist in upstream.
 
-9. **Stage and commit**:
-   ```bash
-   git add -A
-   git commit -m "Sync upstream <remote>/<branch>@<short_sha>"
-   ```
-   Do NOT auto-push. Ask the user if they want to push.
+10. **Re-apply local deltas + verify**. Re-apply each confirmed patch from step 7 onto the fresh upstream file. Then for every real-conflict file `<f>`:
+    ```bash
+    missing=$(while read -r sym; do grep -qF -- "$sym" <f> || echo "$sym"; done < /tmp/fork_symbols_<f>.txt)
+    [ -n "$missing" ] && echo "MISSING in <f>: $missing"
+    ```
+    Any missing symbol means a fork-local piece of code did not survive — stop and re-apply it before continuing. Do NOT commit until this check is clean for every real-conflict file.
 
-10. **Summary**: what was synced, what was preserved, what conflicts were resolved, and any caveats (e.g. anchor-dependent patches that should be runtime-verified).
+11. **Stage and commit**:
+    ```bash
+    git add -A
+    git commit -m "Sync upstream <remote>/<branch>@<short_sha>"
+    ```
+    Do NOT auto-push. Ask the user if they want to push.
+
+12. **Summary**: what was synced, what was preserved, what conflicts were resolved, the symbol-verification result, and any caveats (e.g. anchor-dependent patches that should be runtime-verified).
 
 ## Rules
 
@@ -90,4 +110,6 @@ This skill is built for **fork-by-copy repos** — forks created by copying a sn
 - Do NOT use `git merge` or `git rebase` — this skill works at the file level to avoid unrelated-history issues common in fork-by-copy repos.
 - Do NOT use three-dot diffs (`A...B`) anywhere — they require a merge base.
 - In fork-by-copy repos, `M` does NOT mean conflict. Classify `M` as *drift* vs *real edit* using the batch `git log --invert-grep` command in step 5. Only show diffs and ask the user about *real edits*.
+- **"Last sync commit" is NOT a per-file merge base.** A sync commit that didn't modify file `<f>` leaves older fork-local content in `<f>` untracked by any subsequent baseline. Always compute the fork-local delta as `git diff <remote>/<branch> HEAD -- <f>` (full pairwise against upstream), never as `git diff LAST_SYNC HEAD -- <f>`.
+- Every real-conflict file must pass the symbol-verification step (step 10) before commit. If a fork-local symbol is missing post-checkout, re-apply manually — do not proceed.
 - Do NOT auto-push. Always ask first.
