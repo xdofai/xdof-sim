@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
@@ -156,7 +157,29 @@ class MuJoCoYAMEnv(gym.Env):
 
     def setup_model(self):
         if self._scene_xml_string is not None:
-            model = mujoco.MjModel.from_xml_string(self._scene_xml_string)
+            # MuJoCo's from_xml_string resolves relative asset paths against
+            # the process cwd, while from_xml_path resolves them against the
+            # XML's directory. Randomizers that rebuild the scene on every
+            # reset (scale-replay, dishrack variants, inhand_transfer) feed
+            # MuJoCo an XML string; without this detour, scenes whose
+            # <compiler> omits meshdir/texturedir — e.g. yam_marker_scene.xml
+            # with `<compiler angle="radian"/>` — fail to find
+            # assets/marker/... because cwd is wherever the caller ran from.
+            # Writing to a tempfile in the original scene's directory lets
+            # MuJoCo resolve assets via its usual path-load semantics.
+            if self._scene_xml is not None:
+                asset_root = Path(self._scene_xml).parent
+            else:
+                asset_root = Path(__file__).parent / "models"
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".xml", dir=str(asset_root), delete=False,
+            ) as handle:
+                handle.write(self._scene_xml_string)
+                tmp_path = Path(handle.name)
+            try:
+                model = mujoco.MjModel.from_xml_path(str(tmp_path))
+            finally:
+                tmp_path.unlink(missing_ok=True)
         else:
             model = mujoco.MjModel.from_xml_path(str(self._scene_xml))
         self._bind_model(model)
