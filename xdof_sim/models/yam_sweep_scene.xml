@@ -39,19 +39,19 @@
       <geom type="mesh" contype="0" conaffinity="0" density="0" group="2"/>
     </default>
     <default class="sweep_tool_col">
-      <geom type="mesh" condim="6" friction="3.0 0.1 0.01" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" group="3" density="0" rgba="0 0 0 0"/>
+      <geom type="mesh" condim="6" friction="3.0 0.1 0.01" solref="0.004 1" solimp="0.998 0.998 0.001" priority="1" group="3" density="0" rgba="0.95 0.55 0.15 0.55"/>
     </default>
     <default class="sweep_pan_col">
-      <geom type="mesh" condim="3" friction="0.6 0.01 0.002" solref="0.004 1" solimp="0.998 0.998 0.001" group="3" density="0" rgba="0 0 0 0"/>
+      <geom type="mesh" condim="3" friction="0.6 0.01 0.002" solref="0.004 1" solimp="0.998 0.998 0.001" group="3" density="0" rgba="0.1 0.4 1 0.45"/>
     </default>
     <default class="dustpan_pan_col">
-      <geom type="mesh" condim="3" friction="0.9 0.015 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" group="3" density="0" rgba="0 0 0 0"/>
+      <geom type="mesh" condim="3" friction="0.9 0.015 0.003" solref="0.004 1" solimp="0.998 0.998 0.001" group="3" density="0" rgba="0.2 0.75 0.45 0.45"/>
     </default>
     <default class="trash_paper_vis">
       <geom type="mesh" contype="0" conaffinity="0" density="0" group="2"/>
     </default>
     <default class="trash_paper_col">
-      <geom type="mesh" condim="3" friction="0.15 0.003 0.0005" solref="0.006 1" solimp="0.998 0.998 0.001" group="3" density="100" rgba="0 0 0 0"/>
+      <geom type="mesh" condim="3" friction="0.15 0.003 0.0005" solref="0.006 1" solimp="0.998 0.998 0.001" group="3" density="100" rgba="0.95 0.25 0.25 0.5"/>
     </default>
   </default>
 
@@ -263,8 +263,8 @@
       <geom mesh="dustpan_col14" class="dustpan_pan_col"/>
       <geom mesh="dustpan_col15" class="dustpan_pan_col"/>
       <!-- Handle collision (grippy) -->
-      <geom name="dustpan_handle_grip" type="box" size="0.015 0.02 0.08" pos="0 0 -0.08"
-        condim="6" friction="5.0 0.2 0.02" solref="0.002 1" solimp="0.999 0.999 0.001" group="3" rgba="0 0 0 0"/>
+      <geom name="dustpan_handle_grip" type="box" size="0.012 0.007 0.035" pos="0 0.023 -0.105"
+        condim="6" friction="5.0 0.2 0.02" solref="0.002 1" solimp="0.999 0.999 0.001" density="0" group="3" rgba="0.0 1.0 0.35 0.45"/>
     </body>
 
     <!-- Paper-ball debris to sweep up -->
