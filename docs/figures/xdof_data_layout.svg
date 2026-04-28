@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="860" viewBox="0 0 1400 860">
+  <defs>
+    <style>
+      .title { font: 700 28px sans-serif; fill: #1f2937; }
+      .subtitle { font: 400 16px sans-serif; fill: #4b5563; }
+      .section { font: 700 20px sans-serif; fill: #111827; }
+      .label { font: 600 15px sans-serif; fill: #111827; }
+      .body { font: 400 14px sans-serif; fill: #1f2937; }
+      .mono { font: 400 13px monospace; fill: #111827; }
+      .small { font: 400 12px sans-serif; fill: #374151; }
+      .arrow { stroke: #6b7280; stroke-width: 3; fill: none; marker-end: url(#arrowhead); }
+      .box-stroke { stroke: #374151; stroke-width: 2; }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#6b7280" />
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1400" height="860" fill="#f8fafc" />
+
+  <text x="700" y="42" text-anchor="middle" class="title">xDOF sim data: raw delivery, exported dataset, and stripped cache</text>
+  <text x="700" y="70" text-anchor="middle" class="subtitle">Observed structure on 2026-04-20 from xdof-bair-abc plus xdof-sim exporter and replay code</text>
+
+  <rect x="40" y="105" width="410" height="650" rx="16" fill="#eef6ff" class="box-stroke" />
+  <rect x="495" y="105" width="410" height="650" rx="16" fill="#eefbf0" class="box-stroke" />
+  <rect x="950" y="105" width="410" height="650" rx="16" fill="#fff8e8" class="box-stroke" />
+
+  <text x="245" y="145" text-anchor="middle" class="section">1. Raw delivered episode</text>
+  <text x="700" y="145" text-anchor="middle" class="section">2. Exported training dataset</text>
+  <text x="1155" y="145" text-anchor="middle" class="section">3. Local stripped cache</text>
+
+  <text x="70" y="188" class="label">S3 layout</text>
+  <text x="70" y="212" class="mono">s3://xdof-bair-abc/data/deliveries/</text>
+  <text x="70" y="232" class="mono">&lt;delivery&gt;/&lt;task&gt;/episode_&lt;uuid&gt;/</text>
+  <text x="70" y="262" class="mono">output.mcap</text>
+  <text x="70" y="282" class="mono">sim_state.mcap</text>
+  <text x="70" y="302" class="mono">randomization.json  (optional)</text>
+
+  <text x="70" y="345" class="label">Observed contents</text>
+  <text x="70" y="370" class="body">output.mcap topics:</text>
+  <text x="85" y="392" class="mono">/instruction</text>
+  <text x="85" y="412" class="mono">/left-arm-leader       6D</text>
+  <text x="85" y="432" class="mono">/right-arm-leader      6D</text>
+  <text x="85" y="452" class="mono">/left-arm-proprio      7D</text>
+  <text x="85" y="472" class="mono">/right-arm-proprio     7D</text>
+  <text x="85" y="492" class="mono">/top-camera/image-raw</text>
+  <text x="85" y="512" class="mono">/left-wrist-camera/image-raw</text>
+  <text x="85" y="532" class="mono">/right-wrist-camera/image-raw</text>
+
+  <text x="70" y="570" class="body">sim_state.mcap:</text>
+  <text x="85" y="592" class="mono">/sim_state/qpos</text>
+  <text x="85" y="612" class="small">JSON records with absolute Unix timestamp</text>
+  <text x="85" y="630" class="small">and full MuJoCo qpos vector.</text>
+  <text x="85" y="654" class="small">Example bottle task: qpos length = 51</text>
+
+  <text x="70" y="700" class="small">Scene and canonical task are often derived at load time</text>
+  <text x="70" y="718" class="small">from the instruction or folder name, not stored as first-class fields.</text>
+
+  <text x="525" y="188" class="label">Dataset root</text>
+  <text x="525" y="212" class="mono">s3://.../&lt;dataset-root&gt;/</text>
+  <text x="525" y="240" class="mono">data/episode_&lt;uuid&gt;/</text>
+  <text x="540" y="262" class="mono">states_actions.npy</text>
+  <text x="540" y="282" class="mono">states_actions.bin</text>
+  <text x="540" y="302" class="mono">initial_qpos.npy</text>
+  <text x="540" y="322" class="mono">episode_metadata.json</text>
+  <text x="540" y="342" class="mono">combined_camera-images-rgb.mp4</text>
+  <text x="540" y="362" class="mono">top/left/right camera mp4s</text>
+  <text x="540" y="382" class="mono">*_frame_mappings.json</text>
+
+  <text x="525" y="425" class="label">Training contract</text>
+  <text x="525" y="450" class="body">Each row in states_actions is:</text>
+  <text x="540" y="472" class="mono">14D projected policy state + 14D action</text>
+  <text x="540" y="492" class="small">Action is left 7D + right 7D.</text>
+  <text x="540" y="510" class="small">State is projected from full qpos.</text>
+  <text x="540" y="528" class="small">initial_qpos.npy preserves the full scene start state.</text>
+
+  <text x="525" y="570" class="label">Dataset-level metadata</text>
+  <text x="540" y="594" class="mono">metadata/collected.json</text>
+  <text x="540" y="614" class="mono">metadata/camera_profiles.json</text>
+  <text x="540" y="634" class="mono">metadata/norm_stats.json</text>
+  <text x="540" y="654" class="mono">metadata/train_episodes.json</text>
+  <text x="540" y="674" class="mono">metadata/val_episodes.json</text>
+
+  <text x="525" y="718" class="small">This is the richest training-ready representation.</text>
+
+  <text x="980" y="188" class="label">Typical local cache</text>
+  <text x="980" y="212" class="mono">/tmp/metadata/episode_cache/&lt;dataset&gt;/</text>
+  <text x="980" y="232" class="mono">episode_&lt;uuid&gt;/</text>
+  <text x="995" y="262" class="mono">states_actions.bin</text>
+  <text x="995" y="282" class="mono">combined_camera-images-rgb.mp4</text>
+  <text x="995" y="302" class="mono">horizontal.mp4  (sometimes)</text>
+
+  <text x="980" y="345" class="label">What is missing</text>
+  <text x="995" y="370" class="small">Often absent in this cache:</text>
+  <text x="1010" y="392" class="mono">episode_metadata.json</text>
+  <text x="1010" y="412" class="mono">initial_qpos.npy</text>
+  <text x="1010" y="432" class="mono">camera_profiles.json</text>
+  <text x="1010" y="452" class="mono">per-camera mp4s</text>
+  <text x="1010" y="472" class="mono">frame mapping jsons</text>
+
+  <text x="980" y="520" class="label">Implication</text>
+  <text x="995" y="545" class="small">Good enough for training and quick inspection,</text>
+  <text x="995" y="563" class="small">but not a full substitute for either:</text>
+  <text x="1010" y="585" class="small">raw delivery with full qpos history, or</text>
+  <text x="1010" y="605" class="small">full exported dataset with provenance metadata.</text>
+
+  <line x1="450" y1="430" x2="495" y2="430" class="arrow" />
+  <line x1="905" y1="430" x2="950" y2="430" class="arrow" />
+  <text x="473" y="412" text-anchor="middle" class="small">export</text>
+  <text x="928" y="412" text-anchor="middle" class="small">cache</text>
+
+  <rect x="80" y="770" width="1240" height="54" rx="10" fill="#ffffff" class="box-stroke" />
+  <text x="700" y="803" text-anchor="middle" class="body">Best source of exact simulator state: raw delivery. Best source of training metadata: exported dataset. Local cache is a convenience subset.</text>
+</svg>

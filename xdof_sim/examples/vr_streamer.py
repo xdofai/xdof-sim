@@ -45,6 +45,7 @@ except ImportError:
 from xdof_sim.debug import TASK_DASHBOARD_HTML, TaskEvalDashboardState
 from xdof_sim.scene_xml import SceneXmlTransformOptions, build_scene_xml
 from xdof_sim.teleop import communication as comms
+from xdof_sim.teleop.episode_recorder import TeleopEpisodeRecorder
 
 
 # ---------------------------------------------------------------------------
@@ -1270,6 +1271,12 @@ def main():
             "X/Y to cycle plate and rack variants."
         ),
     )
+    parser.add_argument(
+        "--record-dir",
+        type=str,
+        default=None,
+        help="Optional output dir for exact applied actions + qpos recording",
+    )
     args = parser.parse_args()
     try:
         visible_groups = set(_parse_visible_groups_arg(args.visible_groups))
@@ -1277,6 +1284,9 @@ def main():
         parser.error(str(exc))
     if args.asset_debug and args.task != "dishrack":
         parser.error("--asset-debug is currently only supported for task='dishrack'")
+
+    if args.record_dir and args.mocap:
+        raise SystemExit("--record-dir is only supported in GELLO mode, not --mocap mode")
 
     import xdof_sim
     from xdof_sim.task_registry import get_task_scene_xml
@@ -1405,6 +1415,25 @@ def main():
         debug_spec=(task_evaluator.debug_spec() if task_evaluator is not None else None),
     )
     task_dashboard.update(step=0, sim_time=float(current_data().time), result=env.evaluate_task())
+    recorder: TeleopEpisodeRecorder | None = None
+    if args.record_dir:
+        recorder = TeleopEpisodeRecorder(
+            args.record_dir,
+            task=args.task,
+            scene="hybrid",
+            prompt=(task_spec.prompt if task_spec is not None else env.prompt),
+            control_rate=args.control_rate,
+            extra_metadata={
+                "source": "vr_streamer",
+                "left_leader_topic": f"{args.left_leader}_actions",
+                "right_leader_topic": f"{args.right_leader}_actions",
+                "clean_mode": bool(args.clean),
+                "flexible_gripper": bool(args.flexible_gripper),
+                "xml_override": (str(custom_xml) if custom_xml is not None else None),
+            },
+        )
+        recorder.start(env, initial_state=state)
+        print(f"Recording exact actions + sim state to {args.record_dir}")
 
     # ZMQ
     zmq_context = zmq.Context()
@@ -1450,6 +1479,7 @@ def main():
     # Shared state for physics thread
     GRIP_SCALE = 0.0475
     lock = threading.Lock()
+    stop_event = threading.Event()
     connected = [False]
     step_count = [0]
     frame_bytes = [build_frame_buffer()]
@@ -1560,7 +1590,7 @@ def main():
         nonlocal state
         dt = 1.0 / args.control_rate
 
-        while True:
+        while not stop_event.is_set():
             t0 = time.time()
 
             if pending_reset_request[0] is not None:
@@ -1643,6 +1673,8 @@ def main():
                         data = current_data()
                         env._step_single(action)
                         state = env.get_obs()["state"].copy()
+                        if recorder is not None:
+                            recorder.record_step(action, env, state=state)
                         task_dashboard.update(
                             step=step_count[0] + 1,
                             sim_time=float(data.time),
@@ -1654,7 +1686,7 @@ def main():
             elapsed = time.time() - t0
             remaining = dt - elapsed
             if remaining > 0:
-                time.sleep(remaining)
+                stop_event.wait(remaining)
 
     # Start physics in background thread
     physics_thread = threading.Thread(target=physics_loop, daemon=True)
@@ -1779,7 +1811,19 @@ def main():
     print(f"Open in VR headset browser to connect")
     print(f"Waiting for GELLO leaders on '{args.left_leader}' and '{args.right_leader}'...")
 
-    web.run_app(app_web, host="0.0.0.0", port=args.port, print=None)
+    try:
+        web.run_app(app_web, host="0.0.0.0", port=args.port, print=None)
+    finally:
+        stop_event.set()
+        physics_thread.join(timeout=5.0)
+        if recorder is not None:
+            saved_dir = recorder.close()
+            if saved_dir is not None:
+                print(f"Saved recording to {saved_dir}")
+        left_sub.close()
+        right_sub.close()
+        zmq_context.term()
+        env.close()
 
 
 if __name__ == "__main__":

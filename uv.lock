@@ -3423,6 +3423,7 @@ dependencies = [
     { name = "pillow" },
     { name = "pyopengl" },
     { name = "pyopengl-accelerate" },
+    { name = "pyzmq" },
     { name = "vuer", extra = ["all"] },
 ]
 
@@ -3489,6 +3490,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=10.0" },
     { name = "pyopengl", specifier = ">=3.1" },
     { name = "pyopengl-accelerate", specifier = ">=3.1" },
+    { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "pyzmq", marker = "extra == 'gello'", specifier = ">=25.0" },
     { name = "pyzmq", marker = "extra == 'teleop'", specifier = ">=25.0" },
     { name = "scipy", marker = "extra == 'ik'", specifier = ">=1.10" },

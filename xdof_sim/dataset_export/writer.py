@@ -20,6 +20,10 @@ def combined_video_name() -> str:
     return "combined_camera-images-rgb.mp4"
 
 
+def initial_qpos_name() -> str:
+    return "initial_qpos.npy"
+
+
 def write_states_actions(
     output_dir: Path,
     *,
@@ -39,6 +43,19 @@ def write_states_actions(
     with open(bin_path, "wb") as f:
         f.write(states_actions.tobytes())
     return npy_path, bin_path
+
+
+def write_initial_qpos(
+    output_dir: Path,
+    *,
+    initial_qpos: np.ndarray,
+) -> Path:
+    """Write the full initial MuJoCo qpos for later action replay."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    qpos = np.asarray(initial_qpos, dtype=np.float32)
+    path = output_dir / initial_qpos_name()
+    np.save(path, qpos, allow_pickle=False)
+    return path
 
 
 def write_episode_metadata(
@@ -64,6 +81,8 @@ def write_episode_metadata(
         "render_backend": config.render_backend,
         "cameras": list(trajectory.camera_names),
         "videos": {name: path.name for name, path in sorted(video_paths.items())},
+        "initial_qpos_file": initial_qpos_name(),
+        "initial_qpos_dim": int(len(trajectory.initial_qpos)),
     }
     metadata_path = output_dir / "episode_metadata.json"
     metadata_path.write_text(json.dumps(payload, indent=2) + "\n")
@@ -80,6 +99,7 @@ def validate_exported_episode(
     required = [
         "states_actions.npy",
         "states_actions.bin",
+        initial_qpos_name(),
         "episode_metadata.json",
         combined_video_name(),
     ]
@@ -116,6 +136,7 @@ def build_episode_artifacts(
         episode_dir=output_dir,
         states_actions_path=output_dir / "states_actions.npy",
         states_actions_bin_path=output_dir / "states_actions.bin",
+        initial_qpos_path=output_dir / initial_qpos_name(),
         episode_metadata_path=output_dir / "episode_metadata.json",
         video_paths=video_paths,
     )

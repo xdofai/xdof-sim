@@ -19,6 +19,7 @@ from xdof_sim.dataset_export.trajectory import build_export_trajectory
 from xdof_sim.dataset_export.types import EpisodeArtifacts, ExportConfig, ExportTrajectory
 from xdof_sim.dataset_export.writer import (
     build_episode_artifacts,
+    write_initial_qpos,
     validate_exported_episode,
     write_episode_metadata,
     write_states_actions,
@@ -79,6 +80,10 @@ def export_episode(
             episode_output_dir,
             states=trajectory.states,
             actions=trajectory.actions,
+        )
+        write_initial_qpos(
+            episode_output_dir,
+            initial_qpos=trajectory.initial_qpos,
         )
         write_episode_metadata(
             episode_output_dir,

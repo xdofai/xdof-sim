@@ -71,9 +71,9 @@ def run_export_episode_subprocess(
         episode_dir=Path(payload["episode_dir"]),
         states_actions_path=Path(payload["states_actions_path"]),
         states_actions_bin_path=Path(payload["states_actions_bin_path"]),
+        initial_qpos_path=Path(payload["initial_qpos_path"]),
         episode_metadata_path=Path(payload["episode_metadata_path"]),
         video_paths={key: Path(value) for key, value in payload["video_paths"].items()},
     )
     result_path.unlink(missing_ok=True)
     return artifacts, metadata
-

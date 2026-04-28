@@ -120,4 +120,5 @@ def build_export_trajectory(
         states=states,
         actions=actions,
         qpos=aligned_qpos,
+        initial_qpos=aligned_qpos[0].copy(),
     )

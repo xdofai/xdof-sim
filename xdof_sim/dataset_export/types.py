@@ -43,6 +43,7 @@ class ExportTrajectory:
     states: np.ndarray
     actions: np.ndarray
     qpos: np.ndarray
+    initial_qpos: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -52,5 +53,6 @@ class EpisodeArtifacts:
     episode_dir: Path
     states_actions_path: Path
     states_actions_bin_path: Path
+    initial_qpos_path: Path
     episode_metadata_path: Path
     video_paths: dict[str, Path]

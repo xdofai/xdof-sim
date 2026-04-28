@@ -18,9 +18,9 @@ from xdof_sim.rendering.replay.viewer import ReplayViewer
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Replay a raw or delivered market42 episode through xdof-sim + Viser"
+        description="Replay a raw, delivered, or dataset episode through xdof-sim + Viser"
     )
-    parser.add_argument("episode_dir", help="Path to a raw episode dir or delivered episode dir")
+    parser.add_argument("episode_dir", help="Path to a raw, delivered, or dataset episode dir")
     parser.add_argument("--port", type=int, default=8080, help="Viser server port")
     parser.add_argument("--speed", type=float, default=1.0, help="Playback speed multiplier")
     parser.add_argument(
@@ -42,7 +42,7 @@ def main() -> None:
         "--replay-mode",
         choices=("auto", "physics", "qpos"),
         default="auto",
-        help="Physics re-step or exact qpos replay",
+        help="Physics re-step or direct state replay when replay states are available",
     )
     args = parser.parse_args()
 
@@ -57,11 +57,12 @@ def main() -> None:
         print(f"Instruction: {context.instruction!r}")
     session, control_hz = create_replay_session(context, mode=args.replay_mode)
     print(f"Control Hz: {control_hz:.1f}")
-    print(f"\nAction timeline: {len(session.actions)} steps, {session.duration_s:.1f}s at {control_hz:.1f} Hz")
+    print(f"\nAction timeline: {len(session.actions)} steps, {session.duration_s:.1f}s at {session.timeline_hz:.1f} Hz")
     if session.sim_states is not None:
-        print(f"Sim states: {len(session.sim_states)} frames (nq={session.sim_states.shape[1]})")
+        label = "Sim qpos" if session.has_exact_qpos else "Replay states"
+        print(f"{label}: {len(session.sim_states)} frames (dim={session.sim_states.shape[1]})")
     else:
-        print("No sim_state.mcap found - only physics re-step mode available")
+        print("No replay states found - only physics re-step mode available")
     if context.rand_state is not None:
         print(f"Randomization restored: {len(context.rand_state.object_states)} objects")
     else:

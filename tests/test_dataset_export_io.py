@@ -18,7 +18,9 @@ from xdof_sim.dataset_export.video_io import probe_video_frame_count, write_rgb_
 from xdof_sim.dataset_export.writer import (
     camera_video_name,
     combined_video_name,
+    initial_qpos_name,
     validate_exported_episode,
+    write_initial_qpos,
     write_episode_metadata,
     write_states_actions,
 )
@@ -42,6 +44,7 @@ def make_trajectory() -> ExportTrajectory:
         states=np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
         actions=np.array([[5.0, 6.0], [7.0, 8.0]], dtype=np.float32),
         qpos=np.array([[0.1], [0.2]], dtype=np.float32),
+        initial_qpos=np.array([0.1], dtype=np.float32),
     )
 
 
@@ -93,12 +96,17 @@ class DatasetExportIoTests(unittest.TestCase):
             write_rgb_video(video_paths["combined"], combined, fps=config.fps)
 
             write_states_actions(episode_dir, states=trajectory.states, actions=trajectory.actions)
+            write_initial_qpos(episode_dir, initial_qpos=trajectory.initial_qpos)
             write_episode_metadata(episode_dir, trajectory, config=config, video_paths=video_paths)
             validate_exported_episode(
                 episode_dir,
                 expected_steps=2,
                 camera_names=trajectory.camera_names,
             )
+            self.assertTrue((episode_dir / initial_qpos_name()).exists())
+            metadata = json.loads((episode_dir / "episode_metadata.json").read_text())
+            self.assertEqual(metadata["initial_qpos_file"], initial_qpos_name())
+            self.assertEqual(metadata["initial_qpos_dim"], 1)
 
             collected = {
                 trajectory.episode_id: build_collected_entry(trajectory, config=config),
@@ -122,6 +130,10 @@ class DatasetExportIoTests(unittest.TestCase):
                 other_dir,
                 states=np.array([[9.0, 10.0], [11.0, 12.0]], dtype=np.float32),
                 actions=np.array([[13.0, 14.0], [15.0, 16.0]], dtype=np.float32),
+            )
+            write_initial_qpos(
+                other_dir,
+                initial_qpos=np.array([0.3], dtype=np.float32),
             )
 
             outputs = finalize_dataset_metadata(

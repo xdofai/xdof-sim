@@ -33,11 +33,14 @@ def _put_model_and_data_safe(
         safe_sizes = {key: (0 if value is None else value) for key, value in sizes.items()}
         return original_create_array(data, spec, safe_sizes)
 
-    put_data_kwargs = {"nworld": nworld}
-    if nconmax is not None:
-        put_data_kwargs["nconmax"] = int(nconmax)
-    if njmax is not None:
-        put_data_kwargs["njmax"] = int(njmax)
+    resolved_nconmax = int(nconmax) if nconmax is not None else max(int(getattr(mjm, "nconmax", 0) or 0), int(getattr(mjd, "ncon", 0) or 0), 4096)
+    resolved_njmax = int(njmax) if njmax is not None else max(int(getattr(mjm, "njmax", 0) or 0), int(getattr(mjd, "nefc", 0) or 0), 4096)
+
+    put_data_kwargs = {
+        "nworld": nworld,
+        "nconmax": resolved_nconmax,
+        "njmax": resolved_njmax,
+    }
 
     mjw_io._create_array = _create_array_with_safe_sizes
     try:

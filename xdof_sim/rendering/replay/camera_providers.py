@@ -133,8 +133,6 @@ class MujocoCameraProvider(CameraProvider):
         camera_names: tuple[str, ...] | None = None,
     ):
         try:
-            os.environ.setdefault("MUJOCO_GL", "egl")
-            os.environ.pop("MUJOCO_EGL_DEVICE_ID", None)
             import mujoco
         except ImportError as exc:
             raise RuntimeError("MuJoCo sim camera rendering requires the `mujoco` package.") from exc

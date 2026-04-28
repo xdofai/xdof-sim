@@ -15,6 +15,7 @@ import time
 import mujoco
 import numpy as np
 
+from xdof_sim.teleop.episode_recorder import TeleopEpisodeRecorder
 from xdof_sim.teleop.node import Node
 
 
@@ -28,13 +29,18 @@ class SimFollowerNode(Node):
         left_leader: str = "left",
         right_leader: str = "right",
         scene: str = "hybrid",
+        task: str = "bottles",
         render: bool = True,
+        record_dir: str | None = None,
     ):
         super().__init__(name, control_rate)
         self.left_leader = left_leader
         self.right_leader = right_leader
         self.scene = scene
+        self.task = task
         self.render = render
+        self.record_dir = record_dir
+        self._recorder: TeleopEpisodeRecorder | None = None
 
         # Subscribe to leader topics
         self.create_subscriber(f"{left_leader}_actions", conflate=1)
@@ -47,7 +53,7 @@ class SimFollowerNode(Node):
         import xdof_sim
 
         self.env = xdof_sim.make_env(
-            scene=self.scene, render_cameras=self.render
+            scene=self.scene, task=self.task, render_cameras=self.render
         )
         obs, _ = self.env.reset()
         self._state = obs["state"].copy()
@@ -74,6 +80,24 @@ class SimFollowerNode(Node):
             self.env._step_single(target)
         self._state = self.env.get_obs()["state"]
         self.publish(f"{self._name}_state", self._state)
+        if self.record_dir:
+            task_spec = getattr(self.env, "_task_spec", None)
+            prompt = task_spec.prompt if task_spec is not None else self.env.prompt
+            self._recorder = TeleopEpisodeRecorder(
+                self.record_dir,
+                task=self.task,
+                scene=self.scene,
+                prompt=prompt,
+                control_rate=self._control_rate,
+                extra_metadata={
+                    "source": "sim_follower",
+                    "node_name": self._name,
+                    "left_leader_topic": f"{self.left_leader}_actions",
+                    "right_leader_topic": f"{self.right_leader}_actions",
+                },
+            )
+            self._recorder.start(self.env, initial_state=self._state)
+            print(f"[{self._name}] Recording exact actions + sim state to {self.record_dir}")
         print(f"[{self._name}] Initial position set. Starting control loop.")
 
     def tick(self) -> None:
@@ -99,11 +123,17 @@ class SimFollowerNode(Node):
         self.env._step_single(action)
         obs = self.env.get_obs()
         self._state = obs["state"].copy()
+        if self._recorder is not None:
+            self._recorder.record_step(action, self.env, state=self._state)
 
         # Publish updated state
         self.publish(f"{self._name}_state", self._state)
 
     def on_shutdown(self) -> None:
+        if self._recorder is not None:
+            saved_dir = self._recorder.close()
+            if saved_dir is not None:
+                print(f"[{self._name}] Saved recording to {saved_dir}")
         if hasattr(self, "env"):
             self.env.close()
         print(f"[{self._name}] Sim follower shutdown.")
@@ -117,18 +147,27 @@ def main():
         default="hybrid",
         choices=["eval", "training", "hybrid"],
     )
+    parser.add_argument("--task", type=str, default="bottles")
     parser.add_argument("--left-leader", type=str, default="left")
     parser.add_argument("--right-leader", type=str, default="right")
     parser.add_argument("--control-rate", type=float, default=30.0)
     parser.add_argument("--no-render", action="store_true")
+    parser.add_argument(
+        "--record-dir",
+        type=str,
+        default=None,
+        help="Optional output dir for exact applied actions + sim state recording",
+    )
     args = parser.parse_args()
 
     node = SimFollowerNode(
         scene=args.scene,
+        task=args.task,
         left_leader=args.left_leader,
         right_leader=args.right_leader,
         control_rate=args.control_rate,
         render=not args.no_render,
+        record_dir=args.record_dir,
     )
     node.run()
 

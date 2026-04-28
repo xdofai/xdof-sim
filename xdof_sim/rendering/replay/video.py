@@ -9,6 +9,8 @@ from typing import Sequence
 import numpy as np
 from PIL import Image
 
+from xdof_sim.env import _GRIPPER_CTRL_MAX
+
 
 def tile_camera_frames(frames: dict[str, np.ndarray], camera_names: Sequence[str]) -> np.ndarray:
     """Tile camera frames horizontally in a stable order."""
@@ -60,9 +62,127 @@ def _tile_render_batch(img, camera_indices: Sequence[int]):
     )
 
 
-def export_batched_qpos_sim_video(
+def _actions_to_ctrl_batch(
+    actions: np.ndarray,
+    *,
+    nu: int,
+    ctrl_indices: Sequence[int],
+    gripper_indices: Sequence[int],
+    gripper_ctrl_max: float = _GRIPPER_CTRL_MAX,
+) -> np.ndarray:
+    """Map 14D policy actions into full actuator ctrl vectors."""
+    actions = np.asarray(actions, dtype=np.float32)
+    if actions.ndim != 2:
+        raise ValueError(f"Expected actions shape (T, D), got {actions.shape}")
+    if actions.shape[1] != len(ctrl_indices):
+        raise ValueError(
+            f"Expected action dim {len(ctrl_indices)} from ctrl index mapping, got {actions.shape[1]}"
+        )
+
+    ctrl = np.zeros((actions.shape[0], nu), dtype=np.float32)
+    gripper_set = set(int(i) for i in gripper_indices)
+    for i, ctrl_idx in enumerate(ctrl_indices):
+        values = actions[:, i]
+        if i in gripper_set:
+            values = values * float(gripper_ctrl_max)
+        ctrl[:, int(ctrl_idx)] = values
+    return ctrl
+
+
+def _infer_physics_substeps_per_action(session) -> int:
+    """Infer whether replay actions represent control steps or already-expanded sim steps."""
+    nominal_control_dt = float(session.env.model.opt.timestep * session.env._control_decimation)
+    if len(session.grid_ts) <= 1:
+        return int(session.env._control_decimation)
+    median_dt = float(np.median(np.diff(np.asarray(session.grid_ts, dtype=np.float64))))
+    if median_dt < nominal_control_dt * 0.5:
+        return 1
+    return int(session.env._control_decimation)
+
+
+def _infer_qpos_frame_timestamps(
     session,
     *,
+    frame_count: int,
+    include_initial_frame: bool,
+) -> np.ndarray:
+    """Infer timestamps for a qpos frame sequence captured from this replay session."""
+    grid_ts = np.asarray(session.grid_ts, dtype=np.float64)
+    if len(grid_ts) == frame_count:
+        return grid_ts
+    if not include_initial_frame and len(grid_ts) == frame_count + 1:
+        return grid_ts[1:]
+    if include_initial_frame and len(grid_ts) == frame_count - 1:
+        dt = float(session.step_dt)
+        start = float(grid_ts[0] - dt) if len(grid_ts) > 0 else 0.0
+        return start + np.arange(frame_count, dtype=np.float64) * dt
+    dt = float(session.step_dt)
+    return np.arange(frame_count, dtype=np.float64) * dt
+
+
+def _source_frame_limit_for_output(
+    source_ts: np.ndarray,
+    *,
+    fps: float,
+    max_output_frames: int | None,
+) -> int:
+    """How many source frames are needed to cover the requested output duration."""
+    if len(source_ts) == 0:
+        return 0
+    if max_output_frames is None:
+        return len(source_ts)
+    if max_output_frames <= 0:
+        raise ValueError("max_output_frames must be positive when provided")
+    end_t = float(source_ts[0] + (max_output_frames - 1) / fps)
+    return max(1, min(len(source_ts), int(np.searchsorted(source_ts, end_t, side="right"))))
+
+
+def _sample_qpos_frames_for_video(
+    qpos_frames: np.ndarray,
+    source_ts: np.ndarray,
+    *,
+    fps: float,
+    max_output_frames: int | None,
+) -> np.ndarray:
+    """Resample qpos frames onto a regular output-video timeline using zero-order hold."""
+    qpos_frames = np.asarray(qpos_frames, dtype=np.float32)
+    source_ts = np.asarray(source_ts, dtype=np.float64)
+    if len(qpos_frames) != len(source_ts):
+        raise ValueError(
+            f"qpos frame/timestamp length mismatch: {len(qpos_frames)} vs {len(source_ts)}"
+        )
+    if len(qpos_frames) == 0:
+        raise RuntimeError("No qpos frames available for video sampling")
+    if fps <= 0:
+        raise ValueError("fps must be positive")
+
+    duration = float(source_ts[-1] - source_ts[0]) if len(source_ts) > 1 else 0.0
+    full_output_frames = max(1, int(np.floor(duration * fps)) + 1)
+    output_frames = (
+        full_output_frames
+        if max_output_frames is None
+        else min(full_output_frames, int(max_output_frames))
+    )
+    output_ts = source_ts[0] + np.arange(output_frames, dtype=np.float64) / fps
+    idx = np.searchsorted(source_ts, output_ts, side="right") - 1
+    idx = np.clip(idx, 0, len(source_ts) - 1)
+    return qpos_frames[idx]
+
+
+def _batched_sim_camera_indices(session) -> list[int]:
+    camera_names = tuple(session.env.camera_names)
+    available_names = tuple(session.model.cam(i).name for i in range(session.model.ncam))
+    camera_indices = [available_names.index(name) for name in camera_names if name in available_names]
+    if len(camera_indices) != len(camera_names):
+        missing = [name for name in camera_names if name not in available_names]
+        raise RuntimeError(f"Requested sim cameras missing from model: {missing}")
+    return camera_indices
+
+
+def _render_batched_qpos_frames(
+    session,
+    *,
+    qpos_frames: np.ndarray,
     output_path: Path,
     fps: float,
     sim_backend: Literal["mjwarp", "madrona"],
@@ -70,34 +190,17 @@ def export_batched_qpos_sim_video(
     render_height: int,
     batch_size: int,
     gpu_id: int | None = None,
-    include_initial_frame: bool = True,
     progress_every: int = 100,
-    max_frames: int | None = None,
 ) -> int:
-    """Render exact-qpos replay in batches with MJWarp or Madrona."""
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
-    if session.mode != "qpos" or session.sim_states is None:
-        raise RuntimeError("Batched sim export requires qpos replay mode with aligned sim states")
-
-    from xdof_sim.rendering.replay.renderer import RendererWrapper, WarpReplayRuntime
-
-    session.reset()
-    qpos_frames = session.sim_states if include_initial_frame else session.sim_states[1:]
-    if max_frames is not None:
-        if max_frames <= 0:
-            raise ValueError("max_frames must be positive when provided")
-        qpos_frames = qpos_frames[:max_frames]
     if len(qpos_frames) == 0:
         raise RuntimeError("No qpos frames available for batched export")
 
-    camera_names = tuple(session.env.camera_names)
-    available_names = tuple(session.model.cam(i).name for i in range(session.model.ncam))
-    camera_indices = [available_names.index(name) for name in camera_names if name in available_names]
-    if len(camera_indices) != len(camera_names):
-        missing = [name for name in camera_names if name not in available_names]
-        raise RuntimeError(f"Requested sim cameras missing from model: {missing}")
+    from xdof_sim.rendering.replay.renderer import RendererWrapper, WarpReplayRuntime
 
+    qpos_frames = np.asarray(qpos_frames, dtype=np.float32)
+    camera_indices = _batched_sim_camera_indices(session)
     actual_batch_size = min(batch_size, len(qpos_frames))
     runtime = WarpReplayRuntime(session.model, session.data, nworld=actual_batch_size, gpu_id=gpu_id)
     qpos_frames_device = runtime.upload_qpos_frames(qpos_frames)
@@ -151,9 +254,10 @@ def export_batched_qpos_sim_video(
             written += actual
             if next_progress is not None:
                 while written >= next_progress:
-                    print(f"  Step {min(next_progress, len(qpos_frames))}/{len(qpos_frames)}")
+                    print(f"  Rendered {min(next_progress, len(qpos_frames))}/{len(qpos_frames)}")
                     next_progress += progress_every
     finally:
+        renderer.close()
         if writer is not None:
             writer.close()
 
@@ -161,6 +265,224 @@ def export_batched_qpos_sim_video(
         print(f"imageio not available. Saved {written} PNG frames to {frames_dir}/")
 
     return written
+
+
+def collect_physics_rollout_qpos_frames(
+    session,
+    *,
+    include_initial_frame: bool = True,
+    max_frames: int | None = None,
+    progress_every: int = 100,
+) -> np.ndarray:
+    """Run physics replay and capture the resulting qpos trajectory for batched rendering."""
+    if session.mode != "physics":
+        raise RuntimeError("Physics rollout qpos capture requires a physics replay session")
+    if max_frames is not None and max_frames <= 0:
+        raise ValueError("max_frames must be positive when provided")
+
+    session.reset()
+    frames: list[np.ndarray] = []
+    if include_initial_frame and (max_frames is None or len(frames) < max_frames):
+        frames.append(np.asarray(session.data.qpos, dtype=np.float32).copy())
+
+    steps = 0
+    while (max_frames is None or len(frames) < max_frames) and session.step():
+        frames.append(np.asarray(session.data.qpos, dtype=np.float32).copy())
+        steps += 1
+        if progress_every > 0 and steps % progress_every == 0:
+            print(f"  Rolled out {steps}/{session.total_steps} physics steps")
+
+    if not frames:
+        raise RuntimeError("Physics rollout produced no qpos frames")
+    return np.stack(frames, axis=0)
+
+
+def collect_mjwarp_rollout_qpos_frames(
+    session,
+    *,
+    include_initial_frame: bool = True,
+    max_frames: int | None = None,
+    progress_every: int = 100,
+    gpu_id: int | None = None,
+) -> np.ndarray:
+    """Run physics replay with native MJWarp stepping and capture the qpos trajectory."""
+    if session.mode != "physics":
+        raise RuntimeError("MJWarp rollout qpos capture requires a physics replay session")
+    if max_frames is not None and max_frames <= 0:
+        raise ValueError("max_frames must be positive when provided")
+
+    from xdof_sim.rendering.replay.renderer import WarpReplayRuntime
+
+    session.reset()
+    runtime = WarpReplayRuntime(session.model, session.data, nworld=1, gpu_id=gpu_id)
+    runtime.reset_from_mujoco()
+
+    if session.replay_ctrls is not None:
+        ctrl_frames = np.asarray(session.replay_ctrls, dtype=np.float32)
+    else:
+        ctrl_frames = _actions_to_ctrl_batch(
+            session.actions,
+            nu=session.model.nu,
+            ctrl_indices=session.env._ctrl_indices,
+            gripper_indices=session.env._gripper_indices,
+        )
+    physics_substeps = _infer_physics_substeps_per_action(session)
+
+    frames: list[np.ndarray] = []
+    if include_initial_frame and (max_frames is None or len(frames) < max_frames):
+        frames.append(np.asarray(runtime.d_warp.qpos.numpy()[0], dtype=np.float32).copy())
+
+    steps = 0
+    for ctrl in ctrl_frames:
+        if max_frames is not None and len(frames) >= max_frames:
+            break
+        runtime.set_ctrl_batch(ctrl[None, :])
+        runtime.step(nstep=physics_substeps)
+        frames.append(np.asarray(runtime.d_warp.qpos.numpy()[0], dtype=np.float32).copy())
+        steps += 1
+        if progress_every > 0 and steps % progress_every == 0:
+            print(f"  Rolled out {steps}/{session.total_steps} mjwarp physics steps")
+
+    if not frames:
+        raise RuntimeError("MJWarp physics rollout produced no qpos frames")
+    return np.stack(frames, axis=0)
+
+
+def export_batched_qpos_sim_video(
+    session,
+    *,
+    output_path: Path,
+    fps: float,
+    sim_backend: Literal["mjwarp", "madrona"],
+    render_width: int,
+    render_height: int,
+    batch_size: int,
+    gpu_id: int | None = None,
+    include_initial_frame: bool = True,
+    progress_every: int = 100,
+    max_frames: int | None = None,
+) -> int:
+    """Render exact-qpos replay in batches with MJWarp or Madrona."""
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if (
+        session.mode != "qpos"
+        or not session.has_exact_qpos
+        or session.sim_states is None
+        or session.sim_state_alignment != "initial"
+    ):
+        raise RuntimeError("Batched sim export requires qpos replay mode with aligned exact-qpos states")
+
+    session.reset()
+    qpos_frames = session.sim_states if include_initial_frame else session.sim_states[1:]
+    source_ts = _infer_qpos_frame_timestamps(
+        session,
+        frame_count=len(qpos_frames),
+        include_initial_frame=include_initial_frame,
+    )
+    source_limit = _source_frame_limit_for_output(
+        source_ts,
+        fps=fps,
+        max_output_frames=max_frames,
+    )
+    qpos_frames = qpos_frames[:source_limit]
+    source_ts = source_ts[:source_limit]
+    qpos_frames = _sample_qpos_frames_for_video(
+        qpos_frames,
+        source_ts,
+        fps=fps,
+        max_output_frames=max_frames,
+    )
+    return _render_batched_qpos_frames(
+        session,
+        qpos_frames=qpos_frames,
+        output_path=output_path,
+        fps=fps,
+        sim_backend=sim_backend,
+        render_width=render_width,
+        render_height=render_height,
+        batch_size=batch_size,
+        gpu_id=gpu_id,
+        progress_every=progress_every,
+    )
+
+
+def export_batched_physics_sim_video(
+    session,
+    *,
+    output_path: Path,
+    fps: float,
+    sim_backend: Literal["mjwarp", "madrona"],
+    physics_backend: Literal["mujoco", "mjwarp"] = "mujoco",
+    render_width: int,
+    render_height: int,
+    batch_size: int,
+    gpu_id: int | None = None,
+    include_initial_frame: bool = True,
+    progress_every: int = 100,
+    max_frames: int | None = None,
+) -> int:
+    """Run physics replay once, capture qpos at each step, and render via batched sim rendering."""
+    if physics_backend == "mujoco":
+        source_ts = _infer_qpos_frame_timestamps(
+            session,
+            frame_count=(len(session.grid_ts) if include_initial_frame else max(0, len(session.grid_ts) - 1)),
+            include_initial_frame=include_initial_frame,
+        )
+        source_limit = _source_frame_limit_for_output(
+            source_ts,
+            fps=fps,
+            max_output_frames=max_frames,
+        )
+        qpos_frames = collect_physics_rollout_qpos_frames(
+            session,
+            include_initial_frame=include_initial_frame,
+            max_frames=source_limit,
+            progress_every=progress_every,
+        )
+    elif physics_backend == "mjwarp":
+        source_ts = _infer_qpos_frame_timestamps(
+            session,
+            frame_count=(len(session.grid_ts) if include_initial_frame else max(0, len(session.grid_ts) - 1)),
+            include_initial_frame=include_initial_frame,
+        )
+        source_limit = _source_frame_limit_for_output(
+            source_ts,
+            fps=fps,
+            max_output_frames=max_frames,
+        )
+        qpos_frames = collect_mjwarp_rollout_qpos_frames(
+            session,
+            include_initial_frame=include_initial_frame,
+            max_frames=source_limit,
+            progress_every=progress_every,
+            gpu_id=gpu_id,
+        )
+    else:
+        raise ValueError(f"Unsupported physics backend: {physics_backend!r}")
+    source_ts = _infer_qpos_frame_timestamps(
+        session,
+        frame_count=len(qpos_frames),
+        include_initial_frame=include_initial_frame,
+    )
+    qpos_frames = _sample_qpos_frames_for_video(
+        qpos_frames,
+        source_ts,
+        fps=fps,
+        max_output_frames=max_frames,
+    )
+    return _render_batched_qpos_frames(
+        session,
+        qpos_frames=qpos_frames,
+        output_path=output_path,
+        fps=fps,
+        sim_backend=sim_backend,
+        render_width=render_width,
+        render_height=render_height,
+        batch_size=batch_size,
+        gpu_id=gpu_id,
+        progress_every=progress_every,
+    )
 
 
 def export_replay_video(

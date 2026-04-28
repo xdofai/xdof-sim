@@ -8,25 +8,27 @@ import os
 from pathlib import Path
 import time
 
-# Must be set before mujoco / xdof_sim are imported.
-os.environ.setdefault("MUJOCO_GL", "egl")
-os.environ.setdefault("MUJOCO_EGL_DEVICE_ID", "0")
 
-from xdof_sim.rendering.replay.camera_providers import create_camera_provider
-from xdof_sim.rendering.replay.episode import load_episode_context
-from xdof_sim.rendering.replay.runtime import create_replay_session
-from xdof_sim.rendering.replay.video import export_batched_qpos_sim_video, export_replay_video
+def _configure_mujoco_gl_backend() -> None:
+    """Pick a usable MuJoCo GL backend when one is not already specified."""
+    if os.environ.get("MUJOCO_GL"):
+        return
+    if os.environ.get("DISPLAY"):
+        os.environ["MUJOCO_GL"] = "glfw"
+        return
+    # Headless fallback: OSMesa is stable and CPU-backed on this host.
+    os.environ["MUJOCO_GL"] = "osmesa"
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Headless replay exporter for raw or delivered market42 episodes")
-    parser.add_argument("episode_dir", help="Path to a raw episode dir or delivered episode dir")
+    parser = argparse.ArgumentParser(description="Headless replay exporter for raw, delivered, recorded, or dataset episodes")
+    parser.add_argument("episode_dir", help="Path to a raw, delivered, recorded, or dataset episode dir")
     parser.add_argument("output", help="Output MP4 path")
     parser.add_argument(
         "--replay-mode",
         choices=("auto", "physics", "qpos"),
         default="auto",
-        help="Physics re-step or exact qpos replay",
+        help="Physics re-step or direct state replay when replay states are available",
     )
     parser.add_argument(
         "--camera-source",
@@ -39,6 +41,12 @@ def main() -> None:
         choices=("mujoco", "mjwarp", "madrona"),
         default="mjwarp",
         help="Backend for --camera-source sim",
+    )
+    parser.add_argument(
+        "--sim-physics-backend",
+        choices=("mujoco", "mjwarp"),
+        default="mujoco",
+        help="Physics backend for --camera-source sim with --replay-mode physics",
     )
     parser.add_argument("--render-width", type=int, default=640, help="Sim camera render width")
     parser.add_argument("--render-height", type=int, default=480, help="Sim camera render height")
@@ -68,9 +76,22 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.camera_source == "sim" and args.sim_render_backend == "mujoco":
+        _configure_mujoco_gl_backend()
+
+    from xdof_sim.rendering.replay.camera_providers import create_camera_provider
+    from xdof_sim.rendering.replay.episode import load_episode_context
+    from xdof_sim.rendering.replay.runtime import create_replay_session
+    from xdof_sim.rendering.replay.video import (
+        export_batched_physics_sim_video,
+        export_batched_qpos_sim_video,
+        export_replay_video,
+    )
+
     timings: dict[str, float | int | str | None] = {
         "camera_source": args.camera_source,
         "sim_render_backend": args.sim_render_backend,
+        "sim_physics_backend": args.sim_physics_backend,
         "sim_batch_size": args.sim_batch_size,
         "replay_mode": args.replay_mode,
         "fps": args.fps,
@@ -93,43 +114,72 @@ def main() -> None:
     session, control_hz = create_replay_session(context, mode=args.replay_mode)
     timings["create_session_s"] = time.perf_counter() - t0
     print(f"Control Hz: {control_hz:.1f}")
-    print(f"Timeline: {len(session.actions)} action steps, {session.duration_s:.1f}s")
+    print(f"Timeline: {len(session.actions)} action steps, {session.duration_s:.1f}s at {session.timeline_hz:.1f} Hz")
     if session.sim_states is not None:
-        print(f"Sim states: {len(session.sim_states)} frames (nq={session.sim_states.shape[1]})")
+        label = "Sim qpos" if session.has_exact_qpos else "Replay states"
+        print(f"{label}: {len(session.sim_states)} frames (dim={session.sim_states.shape[1]})")
 
     fps = args.fps
     use_batched_sim_export = (
-        args.sim_batch_size > 1
-        and args.camera_source == "sim"
+        args.camera_source == "sim"
         and args.sim_render_backend in {"mjwarp", "madrona"}
-        and session.mode == "qpos"
+        and (
+            (
+                session.mode == "qpos"
+                and session.has_exact_qpos
+                and session.sim_state_alignment == "initial"
+            )
+            or session.mode == "physics"
+        )
     )
 
     if use_batched_sim_export:
-        print(
-            f"Exporting batched sim video with {args.sim_render_backend} "
-            f"(batch_size={args.sim_batch_size}) at {fps:.1f} FPS ..."
-        )
+        sim_batch_size = max(1, args.sim_batch_size)
         timings["camera_setup_s"] = 0.0
         t0 = time.perf_counter()
-        frame_count = export_batched_qpos_sim_video(
-            session,
-            output_path=output_path,
-            fps=fps,
-            sim_backend=args.sim_render_backend,
-            render_width=args.render_width,
-            render_height=args.render_height,
-            batch_size=args.sim_batch_size,
-            gpu_id=args.gpu_id,
-            include_initial_frame=not args.no_initial_frame,
-            max_frames=args.max_frames,
-        )
+        if session.mode == "physics":
+            print(
+                f"Exporting physics replay via {args.sim_physics_backend} stepping + "
+                f"batched {args.sim_render_backend} sim rendering "
+                f"(batch_size={sim_batch_size}) at {fps:.1f} FPS ..."
+            )
+            frame_count = export_batched_physics_sim_video(
+                session,
+                output_path=output_path,
+                fps=fps,
+                sim_backend=args.sim_render_backend,
+                physics_backend=args.sim_physics_backend,
+                render_width=args.render_width,
+                render_height=args.render_height,
+                batch_size=sim_batch_size,
+                gpu_id=args.gpu_id,
+                include_initial_frame=not args.no_initial_frame,
+                max_frames=args.max_frames,
+            )
+        else:
+            print(
+                f"Exporting exact-qpos replay via batched {args.sim_render_backend} sim rendering "
+                f"(batch_size={sim_batch_size}) at {fps:.1f} FPS ..."
+            )
+            frame_count = export_batched_qpos_sim_video(
+                session,
+                output_path=output_path,
+                fps=fps,
+                sim_backend=args.sim_render_backend,
+                render_width=args.render_width,
+                render_height=args.render_height,
+                batch_size=sim_batch_size,
+                gpu_id=args.gpu_id,
+                include_initial_frame=not args.no_initial_frame,
+                max_frames=args.max_frames,
+            )
         timings["export_s"] = time.perf_counter() - t0
     else:
-        if args.sim_batch_size > 1:
+        if args.camera_source == "sim" and args.sim_render_backend in {"mjwarp", "madrona"}:
             print(
                 "Batched sim export requires --camera-source sim, "
-                "--sim-render-backend mjwarp|madrona, and qpos replay mode; "
+                "--sim-render-backend mjwarp|madrona, and either physics replay or "
+                "initial-aligned exact-qpos replay; "
                 "falling back to step-by-step export."
             )
 

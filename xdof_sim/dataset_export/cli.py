@@ -171,6 +171,7 @@ def main() -> None:
                     "episode_dir": str(artifacts.episode_dir),
                     "states_actions_path": str(artifacts.states_actions_path),
                     "states_actions_bin_path": str(artifacts.states_actions_bin_path),
+                    "initial_qpos_path": str(artifacts.initial_qpos_path),
                     "episode_metadata_path": str(artifacts.episode_metadata_path),
                     "video_paths": {key: str(value) for key, value in artifacts.video_paths.items()},
                     "metadata": metadata,

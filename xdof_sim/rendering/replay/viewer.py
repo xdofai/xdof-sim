@@ -151,17 +151,17 @@ class ReplayViewer:
             def _(_) -> None:
                 self._speed = self._speed_slider.value
 
-            mode_options = ["qpos (exact)", "physics (re-step)"]
+            mode_options = [self.session.state_replay_label, "physics (re-step)"]
             initial_mode = mode_options[0] if self.session.mode == "qpos" else mode_options[1]
             self._mode_dropdown = self.server.gui.add_dropdown(
                 "Replay mode", options=mode_options, initial_value=initial_mode
             )
-            if not self.session.has_exact_qpos:
+            if not self.session.has_state_replay:
                 self._mode_dropdown.disabled = True
 
             @self._mode_dropdown.on_update
             def _(_) -> None:
-                self.session.set_mode("qpos" if "qpos" in self._mode_dropdown.value else "physics")
+                self.session.set_mode("physics" if "physics" in self._mode_dropdown.value else "qpos")
                 self._refresh_after_reset()
 
     def _update_scene(self) -> None:

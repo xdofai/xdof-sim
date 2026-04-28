@@ -10,7 +10,9 @@ from typing import Literal
 import numpy as np
 
 
-EpisodeFormat = Literal["raw", "delivered"]
+EpisodeFormat = Literal["raw", "delivered", "dataset", "recorded"]
+ReplayStateKind = Literal["qpos", "policy_state"]
+ReplayStateAlignment = Literal["initial", "post_step"]
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,25 @@ class EpisodeContext:
     rand_state: Any | None
     raw_sim_states: np.ndarray | None
     raw_sim_timestamps: np.ndarray | None
+    raw_sim_integration_states: np.ndarray | None = None
+    raw_sim_state_spec: int | None = None
+    raw_sim_ctrls: np.ndarray | None = None
+    initial_scene_qpos: np.ndarray | None = None
+    initial_scene_integration_state: np.ndarray | None = None
+    raw_sim_qvels: np.ndarray | None = None
+    raw_sim_acts: np.ndarray | None = None
+    raw_sim_mocap_pos: np.ndarray | None = None
+    raw_sim_mocap_quat: np.ndarray | None = None
+    initial_scene_qvel: np.ndarray | None = None
+    initial_scene_act: np.ndarray | None = None
+    initial_scene_mocap_pos: np.ndarray | None = None
+    initial_scene_mocap_quat: np.ndarray | None = None
+    replay_actions: np.ndarray | None = None
+    replay_ctrls: np.ndarray | None = None
+    replay_timestamps: np.ndarray | None = None
+    replay_state_kind: ReplayStateKind = "qpos"
+    replay_state_alignment: ReplayStateAlignment = "initial"
+    physics_overrides: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -47,3 +68,5 @@ class ReplayTimeline:
     actions: np.ndarray
     grid_ts: np.ndarray
     sim_states: np.ndarray | None
+    sim_state_kind: ReplayStateKind = "qpos"
+    sim_state_alignment: ReplayStateAlignment = "initial"

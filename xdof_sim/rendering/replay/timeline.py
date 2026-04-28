@@ -62,6 +62,15 @@ def align_sim_states(
 
 def build_replay_timeline(context: EpisodeContext, control_hz: float) -> ReplayTimeline:
     """Build the aligned action/qpos timeline used by the viewer."""
+    if context.replay_actions is not None and context.replay_timestamps is not None:
+        return ReplayTimeline(
+            actions=context.replay_actions.astype(np.float32, copy=False),
+            grid_ts=np.asarray(context.replay_timestamps, dtype=np.float64),
+            sim_states=context.raw_sim_states,
+            sim_state_kind=context.replay_state_kind,
+            sim_state_alignment=context.replay_state_alignment,
+        )
+
     actions, grid_ts = build_action_timeline(
         context.streams.actions_left,
         context.streams.ts_left,
@@ -70,4 +79,10 @@ def build_replay_timeline(context: EpisodeContext, control_hz: float) -> ReplayT
         control_hz=control_hz,
     )
     sim_states = align_sim_states(context, grid_ts)
-    return ReplayTimeline(actions=actions, grid_ts=grid_ts, sim_states=sim_states)
+    return ReplayTimeline(
+        actions=actions,
+        grid_ts=grid_ts,
+        sim_states=sim_states,
+        sim_state_kind=context.replay_state_kind,
+        sim_state_alignment=context.replay_state_alignment,
+    )

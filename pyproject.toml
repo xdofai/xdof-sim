@@ -23,6 +23,7 @@ dependencies = [
     "PyOpenGL-accelerate>=3.1",
     "vuer[all]>=0.0.53",
     "params-proto==2.13.2",
+    "pyzmq>=27.1.0",
 ]
 
 [project.optional-dependencies]

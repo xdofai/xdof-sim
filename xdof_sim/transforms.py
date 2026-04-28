@@ -87,8 +87,11 @@ class Unnormalize:
         return data
 
     def _unnormalize(self, x, stats):
-        mean = pad_to_dim(np.array(stats["mean"]), x.shape[-1], axis=-1, value=0.0)
-        std = pad_to_dim(np.array(stats["std"]), x.shape[-1], axis=-1, value=1.0)
+        mean = np.array(stats["mean"])[..., : x.shape[-1]]
+        std = np.array(stats["std"])[..., : x.shape[-1]]
+        if mean.shape[-1] < x.shape[-1]:
+            mean = pad_to_dim(mean, x.shape[-1], axis=-1, value=0.0)
+            std = pad_to_dim(std, x.shape[-1], axis=-1, value=1.0)
         return x * (std + 1e-6) + mean
 
     def _unnormalize_quantile(self, x, stats):
