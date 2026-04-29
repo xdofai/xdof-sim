@@ -871,7 +871,7 @@ class DishRackRandomizer(SceneRandomizer):
         dish_rack_variant, plate_variants = self._resolve_variant_selection(rng, reset_request)
         self._set_active_plate_count(len(plate_variants))
         should_randomize_scales = (
-            False if reset_request.randomize_scales is None else bool(reset_request.randomize_scales)
+            True if reset_request.randomize_scales is None else bool(reset_request.randomize_scales)
         )
         scale_states = self._sample_scale_states(rng) if should_randomize_scales else {}
         self._current_scale_states = dict(scale_states)
@@ -1611,7 +1611,7 @@ class SweepRandomizer(SceneRandomizer):
         trash_count = self._resolve_trash_count(rng, reset_request)
         self._set_active_trash_count(trash_count)
         should_randomize_scales = (
-            False if reset_request.randomize_scales is None else bool(reset_request.randomize_scales)
+            True if reset_request.randomize_scales is None else bool(reset_request.randomize_scales)
         )
         scale_states = self._sample_scale_states(rng) if should_randomize_scales else {}
         self._current_scale_states = dict(scale_states)
