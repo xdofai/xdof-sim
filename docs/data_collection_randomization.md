@@ -185,6 +185,13 @@ warning and keeps the last sampled placement anyway.
 
 #### Custom logic
 
+- Mesh variants are named sequentially:
+  - plates: `plate_0` through `plate_n`
+  - dish racks: `dish_rack_0` through `dish_rack_n`
+- `plate_0` and `dish_rack_0` are the default baked assets from the original
+  dishwasher scene.
+- Task-local asset `model.xml` files carry the plate/rack contact parameters;
+  the scene builder copies those attributes instead of assigning physics in code.
 - 50% chance of mirroring the scene about the XZ plane:
   - negate all Y coordinates
   - rotate the rack by `180 deg` around Z

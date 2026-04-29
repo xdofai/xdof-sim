@@ -8,6 +8,7 @@ import numpy as np
 
 import xdof_sim
 from xdof_sim.randomization import (
+    DishRackRandomizer,
     SweepRandomizer,
     _build_dishrack_scene_xml,
     _dishrack_geom_world_bounds,
@@ -137,6 +138,57 @@ class SweepRandomizerTests(unittest.TestCase):
         self.assertGreaterEqual(len(observed_counts), 2)
 
 
+class DishRackRandomizerBoundsTests(unittest.TestCase):
+    def test_bounds_check_keeps_rack_footprint_off_table_edges(self) -> None:
+        randomizer = DishRackRandomizer()
+        randomizer._current_rack_half_extents_xy = (0.20, 0.10)
+
+        x_min, _x_max, _y_min, _y_max = randomizer.rack_table_edge_bounds
+        margin = randomizer.rack_table_margin_m
+        quat = [1.0, 0.0, 0.0, 0.0]
+
+        inside = {
+            "dishrack": {
+                "pos": [x_min + 0.20 + margin + 0.001, 0.0, 0.75],
+                "quat": quat,
+            }
+        }
+        too_close = {
+            "dishrack": {
+                "pos": [x_min + 0.20 + margin - 0.001, 0.0, 0.75],
+                "quat": quat,
+            }
+        }
+
+        self.assertTrue(randomizer._bounds_ok(inside))
+        self.assertFalse(randomizer._bounds_ok(too_close))
+
+    def test_bounds_check_keeps_plate_footprint_off_table_edges(self) -> None:
+        randomizer = DishRackRandomizer()
+        randomizer._current_plate_variants = ["plate_0"]
+        randomizer._current_plate_collision_radii = [0.05]
+
+        x_min, _x_max, _y_min, _y_max = randomizer.rack_table_edge_bounds
+        margin = 0.05 + randomizer.plate_table_margin_m
+        quat = [1.0, 0.0, 0.0, 0.0]
+
+        inside = {
+            "plate_joint": {
+                "pos": [x_min + margin + 0.001, 0.0, 0.75],
+                "quat": quat,
+            }
+        }
+        too_close = {
+            "plate_joint": {
+                "pos": [x_min + margin - 0.001, 0.0, 0.75],
+                "quat": quat,
+            }
+        }
+
+        self.assertTrue(randomizer._bounds_ok(inside))
+        self.assertFalse(randomizer._bounds_ok(too_close))
+
+
 class DishRackVariantRandomizationTests(unittest.TestCase):
     def test_plate_variant_assets_compile_with_capped_collision_hulls(self) -> None:
         plate_root = Path(__file__).resolve().parents[1] / "xdof_sim" / "models" / "assets" / "task_dishrack" / "plate"
@@ -146,10 +198,9 @@ class DishRackVariantRandomizationTests(unittest.TestCase):
             model_path = variant_dir / "model.xml"
             mujoco.MjModel.from_xml_path(str(model_path))
 
-            if variant_name == "current":
+            collision_meshes = sorted((variant_dir / "collision").glob("model_collision_*.obj"))
+            if not collision_meshes:
                 collision_meshes = sorted(variant_dir.glob("model_collision_*.obj"))
-            else:
-                collision_meshes = sorted((variant_dir / "collision").glob("model_collision_*.obj"))
 
             self.assertGreater(
                 len(collision_meshes),
@@ -168,11 +219,9 @@ class DishRackVariantRandomizationTests(unittest.TestCase):
         table_z = 0.75
 
         for variant_name in _dishrack_variant_names("plate"):
-            if variant_name == "current":
-                continue
             for scale_factor in (0.95, 1.0, 1.05):
                 xml = _build_dishrack_scene_xml(
-                    dish_rack_variant="current",
+                    dish_rack_variant="dish_rack_0",
                     plate_variant=variant_name,
                     scale_states={"plate_joint": scale_factor},
                     base_scene_xml=base_xml,
@@ -204,11 +253,9 @@ class DishRackVariantRandomizationTests(unittest.TestCase):
         table_z = 0.75
 
         for variant_name in _dishrack_variant_names("dish_rack"):
-            if variant_name == "current":
-                continue
             xml = _build_dishrack_scene_xml(
                 dish_rack_variant=variant_name,
-                plate_variant="current",
+                plate_variant="plate_0",
                 scale_states={"plate_joint": 1.0},
                 base_scene_xml=base_xml,
                 base_scene_dir=Path(__file__).resolve().parents[1] / "xdof_sim" / "models",
@@ -229,26 +276,25 @@ class DishRackVariantRandomizationTests(unittest.TestCase):
                 msg=f"{variant_name} bottomed at {min_z:.6f} below table plane {table_z:.6f}",
             )
 
-    def test_build_dishrack_scene_xml_preserves_current_scene_assets(self) -> None:
+    def test_build_dishrack_scene_xml_loads_default_variants(self) -> None:
         xml = _build_dishrack_scene_xml(
-            dish_rack_variant="current",
-            plate_variant="current",
+            dish_rack_variant="dish_rack_0",
+            plate_variant="plate_0",
             scale_states={"plate_joint": 1.0},
             base_scene_xml=None,
             base_scene_dir=None,
         )
+        model = mujoco.MjModel.from_xml_string(xml)
 
-        self.assertIn('mesh="rack_visual"', xml)
-        self.assertIn('material="rack_mat"', xml)
-        self.assertIn('mesh="plate_visual"', xml)
-        self.assertIn('material="plate_mat"', xml)
-        self.assertNotIn("dish_rack_current_model", xml)
-        self.assertNotIn("plate_current_model", xml)
+        self.assertGreaterEqual(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "dishrack"), 0)
+        self.assertGreaterEqual(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "plate"), 0)
+        self.assertIn("dish_rack_0", xml)
+        self.assertIn("plate_0", xml)
 
     def test_build_dishrack_scene_xml_loads_selected_variants(self) -> None:
         xml = _build_dishrack_scene_xml(
-            dish_rack_variant="DishRack040",
-            plate_variant="plate_0",
+            dish_rack_variant="dish_rack_7",
+            plate_variant="plate_1",
             scale_states={"plate_joint": 1.0},
             base_scene_xml=None,
             base_scene_dir=None,
@@ -260,9 +306,9 @@ class DishRackVariantRandomizationTests(unittest.TestCase):
         self.assertGreaterEqual(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "plate_joint"), 0)
 
     def test_build_dishrack_scene_xml_supports_multiple_plate_instances(self) -> None:
-        plate_variants = ["current", "plate_0", "plate_1", "current"]
+        plate_variants = ["plate_0", "plate_1", "plate_2", "plate_0"]
         xml = _build_dishrack_scene_xml(
-            dish_rack_variant="DishRack040",
+            dish_rack_variant="dish_rack_7",
             plate_variants=plate_variants,
             scale_states={
                 "plate_joint": 1.0,

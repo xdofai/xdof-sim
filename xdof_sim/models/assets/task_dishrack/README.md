@@ -4,15 +4,16 @@ This directory is a task-scoped asset namespace for the `dishrack` scene.
 
 Layout:
 
-- `plate/current/`
-  Current baked plate asset used by `yam_dishwasher_scene.xml`.
-- `plate/plate_*/`
+- `plate/plate_0/`
+  Default baked plate asset originally used by `yam_dishwasher_scene.xml`.
+- `plate/plate_1/` through `plate/plate_n/`
   Robocasa plate variants copied from `assets_robocasa/objaverse/objaverse/plate/`.
-- `dish_rack/current/`
-  Current baked dish rack asset used by `yam_dishwasher_scene.xml`.
-- `dish_rack/DishRack*/`
+- `dish_rack/dish_rack_0/`
+  Default baked dish rack asset originally used by `yam_dishwasher_scene.xml`.
+- `dish_rack/dish_rack_1/` through `dish_rack/dish_rack_n/`
   Robocasa dish-rack variants copied from
   `assets_robocasa/objects_lightwheel/lightwheel/dish_rack/`.
 
-The `current/` directories are intended to act as the explicit default variants
-when the dishrack task moves to a placeholder-based base scene.
+All task-local `model.xml` files carry their own visual mass and collision
+parameters so the scene builder only has to copy assets and bodies into the
+placeholder-based base scene.

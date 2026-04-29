@@ -837,6 +837,15 @@ class DishRackRandomizer(SceneRandomizer):
     min_clearance_m = 0.1
     rack_plate_margin_m = 0.02
     plate_plate_margin_m = 0.02
+    rack_table_margin_m = 0.02
+    plate_table_margin_m = 0.02
+    # Physical tabletop edges, before the center-position margin in table_bounds.
+    rack_table_edge_bounds: tuple[float, float, float, float] = (
+        0.3025,
+        0.8975,
+        -0.65,
+        0.65,
+    )
     max_plate_count = 4
     _scene_model_cache_size = 16
     _plate_sample_tries = 64
@@ -847,17 +856,21 @@ class DishRackRandomizer(SceneRandomizer):
 
     def prepare_env(self) -> None:
         self._current_scale_states = {}
-        self._current_plate_variants = ["current"]
+        self._current_plate_variants = [_DISHRACK_DEFAULT_VARIANTS["plate"]]
         self._current_variant_names = {
-            "dish_rack": "current",
-            "plate": "current",
+            "dish_rack": _DISHRACK_DEFAULT_VARIANTS["dish_rack"],
+            "plate": _DISHRACK_DEFAULT_VARIANTS["plate"],
         }
         self._current_plate_collision_radii: list[float] = [0.0]
         self._current_rack_half_extents_xy: tuple[float, float] = (0.0, 0.0)
         self._compiled_scene_model_cache: OrderedDict[tuple[Any, ...], mujoco.MjModel] = OrderedDict()
         self._set_active_plate_count(1)
         self._refresh_collision_metadata()
-        self._reload_variant_scene("current", ["current"], {})
+        self._reload_variant_scene(
+            _DISHRACK_DEFAULT_VARIANTS["dish_rack"],
+            [_DISHRACK_DEFAULT_VARIANTS["plate"]],
+            {},
+        )
 
     def randomize(
         self,
@@ -926,12 +939,20 @@ class DishRackRandomizer(SceneRandomizer):
         )
 
     def apply(self, model: Any, data: Any, state: RandomizationState) -> None:
-        dish_rack_variant = str(state.metadata.get("dish_rack_variant", "current"))
+        dish_rack_variant = _dishrack_canonical_variant_name(
+            "dish_rack",
+            str(state.metadata.get("dish_rack_variant", _DISHRACK_DEFAULT_VARIANTS["dish_rack"])),
+        )
         raw_plate_variants = state.metadata.get("plate_variants")
         if isinstance(raw_plate_variants, (list, tuple)) and raw_plate_variants:
-            plate_variants = [str(value) for value in raw_plate_variants]
+            plate_variants = [_dishrack_canonical_variant_name("plate", str(value)) for value in raw_plate_variants]
         else:
-            plate_variants = [str(state.metadata.get("plate_variant", "current"))]
+            plate_variants = [
+                _dishrack_canonical_variant_name(
+                    "plate",
+                    str(state.metadata.get("plate_variant", _DISHRACK_DEFAULT_VARIANTS["plate"])),
+                )
+            ]
         self._current_scale_states = dict(state.scale_states)
         self._current_plate_variants = list(plate_variants)
         self._current_variant_names = {
@@ -948,7 +969,9 @@ class DishRackRandomizer(SceneRandomizer):
 
     def _refresh_collision_metadata(self) -> None:
         plate_radii: list[float] = []
-        for index, plate_variant in enumerate(getattr(self, "_current_plate_variants", ["current"])):
+        for index, plate_variant in enumerate(
+            getattr(self, "_current_plate_variants", [_DISHRACK_DEFAULT_VARIANTS["plate"]])
+        ):
             plate_half_x, plate_half_y, _, _, _ = _dishrack_compiled_metadata("plate", plate_variant)
             plate_scale = float(
                 self._current_scale_states.get(
@@ -958,7 +981,9 @@ class DishRackRandomizer(SceneRandomizer):
             )
             plate_radii.append(max(plate_half_x, plate_half_y) * plate_scale)
 
-        rack_variant = getattr(self, "_current_variant_names", {}).get("dish_rack", "current")
+        rack_variant = getattr(self, "_current_variant_names", {}).get(
+            "dish_rack", _DISHRACK_DEFAULT_VARIANTS["dish_rack"]
+        )
         rack_half_x, rack_half_y, _, _, _ = _dishrack_compiled_metadata("dish_rack", rack_variant)
         rack_scale = float(self._current_scale_states.get("dishrack", 1.0))
 
@@ -1058,7 +1083,7 @@ class DishRackRandomizer(SceneRandomizer):
         if request.plate_count is not None:
             plate_count = int(request.plate_count)
         elif request.plate_variant is not None or request.cycle_plate != 0 or not randomize_variants:
-            plate_count = len(getattr(self, "_current_plate_variants", ["current"]))
+            plate_count = len(getattr(self, "_current_plate_variants", [_DISHRACK_DEFAULT_VARIANTS["plate"]]))
         else:
             plate_count = int(rng.integers(1, self.max_plate_count + 1))
 
@@ -1101,11 +1126,12 @@ class DishRackRandomizer(SceneRandomizer):
         rng: np.random.Generator,
     ) -> str:
         variants = _dishrack_variant_names(kind)
-        current_variant = getattr(self, "_current_variant_names", {}).get(kind, "current")
+        current_variant = getattr(self, "_current_variant_names", {}).get(kind, _DISHRACK_DEFAULT_VARIANTS[kind])
         if current_variant not in variants:
             current_variant = variants[0]
 
         if explicit_variant is not None:
+            explicit_variant = _dishrack_canonical_variant_name(kind, explicit_variant)
             if explicit_variant not in variants:
                 raise ValueError(
                     f"Unknown {kind} variant {explicit_variant!r}. Available: {', '.join(variants)}"
@@ -1160,7 +1186,9 @@ class DishRackRandomizer(SceneRandomizer):
         if rack_perturb is not None and "dishrack" in nominals:
             states["dishrack"] = sample_state(rack_perturb)
 
-        for index, _plate_variant in enumerate(getattr(self, "_current_plate_variants", ["current"])):
+        for index, _plate_variant in enumerate(
+            getattr(self, "_current_plate_variants", [_DISHRACK_DEFAULT_VARIANTS["plate"]])
+        ):
             joint_name = _dishrack_plate_joint_name(index)
             perturb = perturbations_by_name.get(joint_name)
             if perturb is None or joint_name not in nominals:
@@ -1187,11 +1215,58 @@ class DishRackRandomizer(SceneRandomizer):
                     s["quat"] = _quat_mul(q_180, np.array(s["quat"])).tolist()
         return states
 
+    def _bounds_ok(self, states: dict[str, dict[str, list[float]]]) -> bool:
+        if not super()._bounds_ok(states):
+            return False
+
+        x_min, x_max, y_min, y_max = self.rack_table_edge_bounds
+        plate_radii = getattr(self, "_current_plate_collision_radii", [])
+        for index, _plate_variant in enumerate(
+            getattr(self, "_current_plate_variants", [_DISHRACK_DEFAULT_VARIANTS["plate"]])
+        ):
+            joint_name = _dishrack_plate_joint_name(index)
+            plate_state = states.get(joint_name)
+            if plate_state is None:
+                continue
+            if index < len(plate_radii):
+                plate_radius = plate_radii[index]
+            else:
+                plate_half_x, plate_half_y, _, _, _ = _dishrack_compiled_metadata("plate", _plate_variant)
+                plate_scale = float(
+                    self._current_scale_states.get(joint_name, self._current_scale_states.get("plate_joint", 1.0))
+                )
+                plate_radius = max(plate_half_x, plate_half_y) * plate_scale
+
+            margin = plate_radius + self.plate_table_margin_m
+            x, y = float(plate_state["pos"][0]), float(plate_state["pos"][1])
+            if not (x_min + margin <= x <= x_max - margin and y_min + margin <= y <= y_max - margin):
+                return False
+
+        rack_state = states.get("dishrack")
+        if rack_state is None:
+            return True
+
+        rack_half_x, rack_half_y = getattr(self, "_current_rack_half_extents_xy", (0.0, 0.0))
+        rack_yaw = _yaw_from_quat(np.asarray(rack_state["quat"], dtype=np.float64))
+        c = abs(float(np.cos(rack_yaw)))
+        s = abs(float(np.sin(rack_yaw)))
+        world_half_x = c * rack_half_x + s * rack_half_y
+        world_half_y = s * rack_half_x + c * rack_half_y
+
+        margin = self.rack_table_margin_m
+        x, y = float(rack_state["pos"][0]), float(rack_state["pos"][1])
+        return (
+            x_min + world_half_x + margin <= x <= x_max - world_half_x - margin
+            and y_min + world_half_y + margin <= y <= y_max - world_half_y - margin
+        )
+
     def _pairwise_ok(self, states: dict[str, dict[str, list[float]]]) -> bool:
         rack_state = states.get("dishrack")
         plate_entries: list[tuple[np.ndarray, float]] = []
         plate_radii = getattr(self, "_current_plate_collision_radii", [])
-        for index, _plate_variant in enumerate(getattr(self, "_current_plate_variants", ["current"])):
+        for index, _plate_variant in enumerate(
+            getattr(self, "_current_plate_variants", [_DISHRACK_DEFAULT_VARIANTS["plate"]])
+        ):
             joint_name = _dishrack_plate_joint_name(index)
             plate_state = states.get(joint_name)
             if plate_state is None:
@@ -1248,6 +1323,7 @@ class DishRackRandomizer(SceneRandomizer):
         if self._env_ref is None:
             raise RuntimeError("DishRackRandomizer requires a bound env before scene reload")
 
+        dish_rack_variant = _dishrack_canonical_variant_name("dish_rack", dish_rack_variant)
         normalized_plate_variants = _dishrack_normalize_plate_variants(plate_variants)
         self._set_active_plate_count(len(normalized_plate_variants))
         scene_cache_key = self._scene_model_cache_key(
@@ -2154,34 +2230,43 @@ from pathlib import Path as _Path
 
 _MODELS_DIR = _Path(__file__).parent / "models"
 _DISHRACK_BASE_SCENE_XML = _MODELS_DIR / "yam_dishrack_base.xml"
-_DISHRACK_CURRENT_SOURCE_SCENE_XML = _MODELS_DIR / "yam_dishwasher_scene.xml"
 _DISHRACK_TASK_ASSET_ROOT = _MODELS_DIR / "assets" / "task_dishrack"
 _DISHRACK_VARIANT_ROOTS: dict[str, _Path] = {
     "plate": _DISHRACK_TASK_ASSET_ROOT / "plate",
     "dish_rack": _DISHRACK_TASK_ASSET_ROOT / "dish_rack",
 }
-_DISHRACK_CURRENT_BODY_NAMES: dict[str, str] = {
-    "dish_rack": "dishrack",
-    "plate": "plate",
+_DISHRACK_DEFAULT_VARIANTS: dict[str, str] = {
+    "dish_rack": "dish_rack_0",
+    "plate": "plate_0",
 }
-_DISHRACK_CURRENT_ASSET_PREFIXES: dict[str, str] = {
-    "dish_rack": "rack_",
-    "plate": "plate_",
+_DISHRACK_VARIANT_ALIASES: dict[str, dict[str, str]] = {
+    "dish_rack": {
+        "current": "dish_rack_0",
+        "DishRack026": "dish_rack_1",
+        "DishRack027": "dish_rack_2",
+        "DishRack028": "dish_rack_3",
+        "DishRack030": "dish_rack_4",
+        "DishRack038": "dish_rack_5",
+        "DishRack039": "dish_rack_6",
+        "DishRack040": "dish_rack_7",
+        "DishRack041": "dish_rack_8",
+        "DishRack043": "dish_rack_9",
+        "DishRack044": "dish_rack_10",
+        "DishRack047": "dish_rack_11",
+        "DishRack050": "dish_rack_12",
+    },
+    "plate": {
+        "current": "plate_0",
+    },
 }
-_DISHRACK_RACK_WRAPPER_POSITIONS: dict[str, tuple[float, float, float]] = {
-    "current": (0.62, -0.24, 0.75),
-    "variant": (0.62, -0.24, 0.75),
-}
+_DISHRACK_RACK_WRAPPER_POSITION: tuple[float, float, float] = (0.62, -0.24, 0.75)
 _DISHRACK_PLATE_WRAPPER_XY: tuple[tuple[float, float], ...] = (
     (0.50, 0.20),
     (0.72, 0.20),
     (0.50, 0.44),
     (0.72, 0.44),
 )
-_DISHRACK_PLATE_WRAPPER_Z: dict[str, float] = {
-    "current": 0.76,
-    "variant": 0.75,
-}
+_DISHRACK_PLATE_WRAPPER_Z: float = 0.75
 _BASE_SCENE_XML = _MODELS_DIR / "yam_inhand_transfer_base.xml"
 _LIGHTWHEEL_BASE = _MODELS_DIR / "assets_robocasa" / "objects_lightwheel" / "lightwheel"
 _OBJAVERSE_BASE = _MODELS_DIR / "assets_robocasa" / "objaverse" / "objaverse"
@@ -2213,11 +2298,24 @@ def _dishrack_variant_names(kind: str) -> list[str]:
         for path in root.iterdir()
         if path.is_dir() and (path / "model.xml").exists()
     ]
-    variants.sort(key=lambda name: (name != "current", name))
+    prefix = "plate_" if kind == "plate" else "dish_rack_"
+    variants.sort(
+        key=lambda name: (
+            0,
+            int(name[len(prefix) :]),
+        )
+        if name.startswith(prefix) and name[len(prefix) :].isdigit()
+        else (1, name)
+    )
     return variants
 
 
+def _dishrack_canonical_variant_name(kind: str, variant_name: str) -> str:
+    return _DISHRACK_VARIANT_ALIASES.get(kind, {}).get(variant_name, variant_name)
+
+
 def _dishrack_variant_dir(kind: str, variant_name: str) -> _Path:
+    variant_name = _dishrack_canonical_variant_name(kind, variant_name)
     path = _DISHRACK_VARIANT_ROOTS[kind] / variant_name
     if not (path / "model.xml").exists():
         raise FileNotFoundError(f"Missing {kind} variant model.xml: {path}")
@@ -2249,9 +2347,9 @@ def _dishrack_normalize_plate_variants(
     plate_variants: str | list[str] | tuple[str, ...],
 ) -> list[str]:
     if isinstance(plate_variants, str):
-        normalized = [plate_variants]
+        normalized = [_dishrack_canonical_variant_name("plate", plate_variants)]
     else:
-        normalized = [str(value) for value in plate_variants]
+        normalized = [_dishrack_canonical_variant_name("plate", str(value)) for value in plate_variants]
 
     if not 1 <= len(normalized) <= DishRackRandomizer.max_plate_count:
         raise ValueError(
@@ -2266,139 +2364,6 @@ def _dishrack_normalize_plate_variants(
             f"Unknown plate variants {invalid}. Available: {', '.join(sorted(available))}"
         )
     return normalized
-
-
-def _dishrack_current_scene_root() -> _ET.Element:
-    return _ET.parse(str(_DISHRACK_CURRENT_SOURCE_SCENE_XML)).getroot()
-
-
-def _dishrack_collect_current_assets(scene_root: _ET.Element, *, kind: str) -> list[_ET.Element]:
-    asset_root = scene_root.find("asset")
-    if asset_root is None:
-        raise ValueError("Current dishrack source scene is missing <asset>")
-
-    asset_prefix = _DISHRACK_CURRENT_ASSET_PREFIXES[kind]
-    texture_name = f"{asset_prefix}tex"
-    material_name = f"{asset_prefix}mat"
-    visual_name = f"{asset_prefix}visual"
-    collision_prefix = f"{asset_prefix}col_"
-    current_dir = _dishrack_variant_dir(kind, "current")
-
-    selected: list[_ET.Element] = []
-    for asset_child in list(asset_root):
-        name = asset_child.get("name", "")
-        if asset_child.tag == "texture" and name == texture_name:
-            selected.append(copy.deepcopy(asset_child))
-            continue
-        if asset_child.tag == "material" and name == material_name:
-            selected.append(copy.deepcopy(asset_child))
-            continue
-        if asset_child.tag == "mesh" and (name == visual_name or name.startswith(collision_prefix)):
-            selected.append(copy.deepcopy(asset_child))
-
-    if not selected:
-        raise ValueError(f"Missing current assets for {kind} in {_DISHRACK_CURRENT_SOURCE_SCENE_XML}")
-
-    for asset_child in selected:
-        file_attr = asset_child.get("file")
-        if file_attr:
-            asset_child.set("file", str((current_dir / _Path(file_attr).name).resolve()))
-    return selected
-
-
-def _dishrack_current_body(scene_root: _ET.Element, *, kind: str) -> _ET.Element:
-    worldbody = scene_root.find("worldbody")
-    if worldbody is None:
-        raise ValueError("Current dishrack source scene is missing <worldbody>")
-    body_name = _DISHRACK_CURRENT_BODY_NAMES[kind]
-    body = worldbody.find(f".//body[@name='{body_name}']")
-    if body is None:
-        raise ValueError(f"Missing current body '{body_name}' in {_DISHRACK_CURRENT_SOURCE_SCENE_XML}")
-    return copy.deepcopy(body)
-
-
-def _dishrack_build_current_object_block(
-    *,
-    kind: str,
-    scale_factor: float,
-    object_name: str,
-    joint_name: str | None,
-    instance_index: int,
-    preserve_asset_names: bool,
-) -> tuple[list[_ET.Element], _ET.Element]:
-    scene_root = _dishrack_current_scene_root()
-    current_assets = _dishrack_collect_current_assets(scene_root, kind=kind)
-    name_prefix = _dishrack_instance_prefix(kind, "current", instance_index)
-    mesh_map: dict[str, str] = {}
-    texture_map: dict[str, str] = {}
-    material_map: dict[str, str] = {}
-
-    for asset_child in current_assets:
-        local_name = _dishrack_asset_local_name(asset_child)
-        if asset_child.tag == "mesh":
-            mesh_map[local_name] = (
-                local_name if preserve_asset_names else _dishrack_prefixed_name(name_prefix, local_name)
-            )
-            continue
-        if asset_child.tag == "texture":
-            texture_map[local_name] = (
-                local_name if preserve_asset_names else _dishrack_prefixed_name(name_prefix, local_name)
-            )
-            continue
-        if asset_child.tag == "material":
-            material_map[local_name] = (
-                local_name if preserve_asset_names else _dishrack_prefixed_name(name_prefix, local_name)
-            )
-
-    temp_asset = _ET.Element("asset")
-    for asset_child in current_assets:
-        cloned = copy.deepcopy(asset_child)
-        local_name = _dishrack_asset_local_name(asset_child)
-        if asset_child.tag == "mesh":
-            cloned.set("name", mesh_map[local_name])
-        elif asset_child.tag == "texture":
-            cloned.set("name", texture_map[local_name])
-        elif asset_child.tag == "material":
-            cloned.set("name", material_map[local_name])
-            texture_name = asset_child.get("texture")
-            if texture_name and texture_name in texture_map:
-                cloned.set("texture", texture_map[texture_name])
-        temp_asset.append(cloned)
-
-    cloned_body = _dishrack_current_body(scene_root, kind=kind)
-    _dishrack_remove_dynamic_joints(cloned_body)
-    _dishrack_prefix_body_names(cloned_body, name_prefix)
-    _dishrack_rewrite_asset_refs(
-        cloned_body,
-        mesh_map=mesh_map,
-        material_map=material_map,
-    )
-    _dishrack_normalize_geoms(cloned_body, kind=kind)
-    cloned_body.set("pos", "0 0 0")
-
-    if abs(scale_factor - 1.0) > 1e-9:
-        mesh_assets = {
-            mesh.get("name", ""): mesh
-            for mesh in temp_asset.findall("mesh")
-            if mesh.get("name")
-        }
-        _scale_body_subtree(
-            body=cloned_body,
-            factor=scale_factor,
-            target_name=joint_name or object_name,
-            asset_elem=temp_asset,
-            mesh_assets=mesh_assets,
-        )
-
-    wrapper = _ET.Element(
-        "body",
-        name=object_name,
-        pos=_format_float_list(list(_dishrack_wrapper_position(kind, "current", instance_index))),
-    )
-    if joint_name is not None:
-        _ET.SubElement(wrapper, "freejoint", name=joint_name)
-    wrapper.append(cloned_body)
-    return list(temp_asset), wrapper
 
 
 def _dishrack_asset_local_name(elem: _ET.Element) -> str:
@@ -2556,17 +2521,6 @@ def _dishrack_absolutize_file_attr(elem: _ET.Element, variant_dir: _Path) -> Non
         elem.set("file", str((variant_dir / file_attr).resolve()))
 
 
-def _dishrack_is_visual_geom(geom: _ET.Element) -> bool:
-    cls = geom.get("class", "")
-    if geom.get("name") == "reg_bbox" or cls == "region":
-        return False
-    if cls == "visual":
-        return True
-    if cls == "collision":
-        return False
-    return geom.get("contype") == "0"
-
-
 def _dishrack_remove_dynamic_joints(body: _ET.Element) -> None:
     for parent in body.iter():
         for child in list(parent):
@@ -2596,8 +2550,7 @@ def _dishrack_rewrite_asset_refs(
             child.set("material", material_map[material_name])
 
 
-def _dishrack_normalize_geoms(body: _ET.Element, *, kind: str) -> None:
-    first_visual = True
+def _dishrack_prepare_imported_geoms(body: _ET.Element) -> None:
     for parent in body.iter():
         for child in list(parent):
             if child.tag != "geom":
@@ -2606,31 +2559,7 @@ def _dishrack_normalize_geoms(body: _ET.Element, *, kind: str) -> None:
                 parent.remove(child)
                 continue
 
-            if _dishrack_is_visual_geom(child):
-                child.attrib.pop("class", None)
-                child.set("group", "2")
-                child.set("contype", "0")
-                child.set("conaffinity", "0")
-                child.set("density", "0")
-                if first_visual:
-                    child.set("mass", "0.075" if kind == "plate" else "0.5")
-                    first_visual = False
-                else:
-                    child.attrib.pop("mass", None)
-                continue
-
             child.attrib.pop("class", None)
-            child.set("group", "3")
-            child.set("rgba", "0 0 0 0")
-            child.set("density", "0")
-            child.set("solref", "0.004 1")
-            child.set("solimp", "0.998 0.998 0.001")
-            if kind == "plate":
-                child.set("friction", "3.0 0.1 0.01")
-                child.set("condim", "6")
-                child.set("priority", "1")
-            else:
-                child.set("friction", "0.5")
 
 
 def _dishrack_shift_body(body: _ET.Element, offset: np.ndarray) -> None:
@@ -2655,9 +2584,8 @@ def _dishrack_wrapper_position(
     variant_name: str,
     instance_index: int = 0,
 ) -> tuple[float, float, float]:
-    variant_key = "current" if variant_name == "current" else "variant"
     if kind == "dish_rack":
-        return _DISHRACK_RACK_WRAPPER_POSITIONS[variant_key]
+        return _DISHRACK_RACK_WRAPPER_POSITION
     if kind != "plate":
         raise ValueError(f"Unsupported dishrack object kind {kind!r}")
     if not 0 <= instance_index < len(_DISHRACK_PLATE_WRAPPER_XY):
@@ -2666,7 +2594,7 @@ def _dishrack_wrapper_position(
             f"got {instance_index}"
         )
     x, y = _DISHRACK_PLATE_WRAPPER_XY[instance_index]
-    return (x, y, _DISHRACK_PLATE_WRAPPER_Z[variant_key])
+    return (x, y, _DISHRACK_PLATE_WRAPPER_Z)
 
 
 def _dishrack_build_object_block(
@@ -2677,18 +2605,8 @@ def _dishrack_build_object_block(
     object_name: str,
     joint_name: str | None,
     instance_index: int,
-    preserve_asset_names: bool = False,
 ) -> tuple[list[_ET.Element], _ET.Element]:
-    if variant_name == "current":
-        return _dishrack_build_current_object_block(
-            kind=kind,
-            scale_factor=scale_factor,
-            object_name=object_name,
-            joint_name=joint_name,
-            instance_index=instance_index,
-            preserve_asset_names=preserve_asset_names,
-        )
-
+    variant_name = _dishrack_canonical_variant_name(kind, variant_name)
     variant_dir = _dishrack_variant_dir(kind, variant_name)
     root = _ET.parse(str(variant_dir / "model.xml")).getroot()
     object_body = _dishrack_find_object_body(root)
@@ -2736,7 +2654,7 @@ def _dishrack_build_object_block(
         mesh_map=mesh_map,
         material_map=material_map,
     )
-    _dishrack_normalize_geoms(cloned_body, kind=kind)
+    _dishrack_prepare_imported_geoms(cloned_body)
     _dishrack_shift_body(cloned_body, offset)
 
     if abs(scale_factor - 1.0) > 1e-9:
@@ -2776,8 +2694,9 @@ def _build_dishrack_scene_xml(
     base_text = base_scene_xml or _DISHRACK_BASE_SCENE_XML.read_text()
     base_dir = base_scene_dir or _DISHRACK_BASE_SCENE_XML.parent
     normalized_plate_variants = _dishrack_normalize_plate_variants(
-        plate_variants if plate_variants is not None else (plate_variant or "current")
+        plate_variants if plate_variants is not None else (plate_variant or _DISHRACK_DEFAULT_VARIANTS["plate"])
     )
+    dish_rack_variant = _dishrack_canonical_variant_name("dish_rack", dish_rack_variant)
 
     rack_assets, rack_body = _dishrack_build_object_block(
         kind="dish_rack",
@@ -2786,7 +2705,6 @@ def _build_dishrack_scene_xml(
         object_name="dishrack",
         joint_name=None,
         instance_index=0,
-        preserve_asset_names=dish_rack_variant == "current",
     )
     task_assets = list(rack_assets)
     task_bodies = [rack_body]
@@ -2798,7 +2716,6 @@ def _build_dishrack_scene_xml(
             object_name=_dishrack_plate_body_name(index),
             joint_name=_dishrack_plate_joint_name(index),
             instance_index=index,
-            preserve_asset_names=current_plate_variant == "current" and index == 0,
         )
         task_assets.extend(plate_assets)
         task_bodies.append(plate_body)

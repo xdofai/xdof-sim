@@ -3,7 +3,7 @@
 Examples:
     MUJOCO_GL=egl uv run python -m xdof_sim.examples.visualize_dishrack_variants
     MUJOCO_GL=egl uv run python -m xdof_sim.examples.visualize_dishrack_variants --plate-variant plate_0
-    MUJOCO_GL=egl uv run python -m xdof_sim.examples.visualize_dishrack_variants --sweep plate --rack-variant DishRack040
+    MUJOCO_GL=egl uv run python -m xdof_sim.examples.visualize_dishrack_variants --sweep plate --rack-variant dish_rack_7
     MUJOCO_GL=egl uv run python -m xdof_sim.examples.visualize_dishrack_variants --sheet-out /tmp/dishrack_variants.png
 """
 
@@ -31,9 +31,11 @@ from xdof_sim.examples.visualize_randomization import (
     write_mp4,
 )
 from xdof_sim.randomization import _dishrack_variant_names
+from xdof_sim.randomization import _dishrack_canonical_variant_name
 
 
 def _validate_variant(kind: str, variant_name: str) -> str:
+    variant_name = _dishrack_canonical_variant_name(kind, variant_name)
     variants = set(_dishrack_variant_names(kind))
     if variant_name not in variants:
         available = ", ".join(sorted(variants))
@@ -148,13 +150,13 @@ def main() -> None:
     parser.add_argument(
         "--plate-variant",
         type=str,
-        default="current",
+        default="plate_0",
         help="Plate variant to keep fixed while sweeping dishracks, or default plate when validating args",
     )
     parser.add_argument(
         "--rack-variant",
         type=str,
-        default="current",
+        default="dish_rack_0",
         help="Dishrack variant to keep fixed while sweeping plates",
     )
     args = parser.parse_args()

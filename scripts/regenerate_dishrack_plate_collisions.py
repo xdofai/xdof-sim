@@ -4,7 +4,7 @@
 This keeps each variant's existing visual assets and materials, but replaces
 the imported collision decomposition with a fresh CoACD pass over the combined
 plate mesh. The result is a cleaner, capped set of convex collision hulls that
-matches the current plate asset more closely.
+matches the default plate asset more closely.
 """
 
 from __future__ import annotations
@@ -183,26 +183,40 @@ def _regenerate_variant(
     return len(list(collision_dir.glob("model_collision_*.obj")))
 
 
-def _iter_variant_dirs(include_current: bool, requested_variants: list[str] | None) -> list[Path]:
+def _variant_sort_key(path: Path) -> tuple[int, int | str]:
+    name = path.name
+    prefix = "plate_"
+    if name.startswith(prefix) and name[len(prefix) :].isdigit():
+        return (0, int(name[len(prefix) :]))
+    return (1, name)
+
+
+def _iter_variant_dirs(include_default: bool, requested_variants: list[str] | None) -> list[Path]:
     if requested_variants:
         return [PLATE_ROOT / variant_name for variant_name in requested_variants]
 
-    variant_dirs = [path for path in sorted(PLATE_ROOT.iterdir()) if path.is_dir()]
-    if include_current:
+    variant_dirs = sorted((path for path in PLATE_ROOT.iterdir() if path.is_dir()), key=_variant_sort_key)
+    if include_default:
         return variant_dirs
-    return [path for path in variant_dirs if path.name != "current"]
+    return [path for path in variant_dirs if path.name != "plate_0"]
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--include-current", action="store_true", help="also regenerate the current plate asset")
+    parser.add_argument("--include-default", action="store_true", help="also regenerate plate_0")
+    parser.add_argument(
+        "--include-current",
+        action="store_true",
+        dest="include_default",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--variant", action="append", dest="variants", help="specific plate variant(s) to regenerate")
     parser.add_argument("--threshold", type=float, default=0.05, help="CoACD concavity threshold")
     parser.add_argument("--max-convex-hulls", type=int, default=16, help="maximum convex hulls per plate")
     parser.add_argument("--seed", type=int, default=0, help="CoACD random seed")
     args = parser.parse_args()
 
-    variant_dirs = _iter_variant_dirs(args.include_current, args.variants)
+    variant_dirs = _iter_variant_dirs(args.include_default, args.variants)
     if not variant_dirs:
         raise ValueError("No plate variants selected")
 

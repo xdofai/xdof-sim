@@ -12,8 +12,8 @@ from xdof_sim.examples.visualize_randomization import (
 
 class VisualizeRandomizationTests(unittest.TestCase):
     def test_format_rack_variant_label_uses_numeric_suffix(self) -> None:
-        self.assertEqual(_format_rack_variant_label("DishRack040"), "040")
-        self.assertEqual(_format_rack_variant_label("current"), "current")
+        self.assertEqual(_format_rack_variant_label("dish_rack_7"), "7")
+        self.assertEqual(_format_rack_variant_label("dish_rack_0"), "0")
 
     def test_build_contact_sheet_tiles_frames_row_major(self) -> None:
         red = np.full((4, 6, 3), (255, 0, 0), dtype=np.uint8)
