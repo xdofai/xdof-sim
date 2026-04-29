@@ -57,6 +57,10 @@ This skill is built for **fork-by-copy repos** — forks created by copying a sn
    - N local-only files (will be preserved)
    - N real conflicts (need review) — list these by name
 
+   **Branch point**:
+   - **Zero real conflicts** → proceed end-to-end without pausing (skip step 7 entirely; still run steps 8–10 for any files that intersect `M` ∩ real-local-edits, which by definition is empty here; go to step 11 and commit). Report the final summary afterwards.
+   - **One or more real conflicts** → continue to step 7 and **wait for user confirmation** on the resolution plan before applying anything.
+
 7. **Compute the full fork-local delta per conflict file**. For each real-conflict file `<f>`:
    ```bash
    git diff <remote>/<branch> HEAD -- <f>
@@ -92,7 +96,7 @@ This skill is built for **fork-by-copy repos** — forks created by copying a sn
     ```
     Any missing symbol means a fork-local piece of code did not survive — stop and re-apply it before continuing. Do NOT commit until this check is clean for every real-conflict file.
 
-11. **Stage and commit**:
+11. **Stage and commit** (no user confirmation needed — the branch point in step 6 already gated this on conflict presence):
     ```bash
     git add -A
     git commit -m "Sync upstream <remote>/<branch>@<short_sha>"
@@ -112,4 +116,5 @@ This skill is built for **fork-by-copy repos** — forks created by copying a sn
 - In fork-by-copy repos, `M` does NOT mean conflict. Classify `M` as *drift* vs *real edit* using the batch `git log --invert-grep` command in step 5. Only show diffs and ask the user about *real edits*.
 - **"Last sync commit" is NOT a per-file merge base.** A sync commit that didn't modify file `<f>` leaves older fork-local content in `<f>` untracked by any subsequent baseline. Always compute the fork-local delta as `git diff <remote>/<branch> HEAD -- <f>` (full pairwise against upstream), never as `git diff LAST_SYNC HEAD -- <f>`.
 - Every real-conflict file must pass the symbol-verification step (step 10) before commit. If a fork-local symbol is missing post-checkout, re-apply manually — do not proceed.
+- **Confirmation is gated on real conflicts, not on the sync itself.** If step 5 finds zero real-conflict files, run through apply → verify → commit without pausing — the diff summary in step 6 is informational, not a prompt. Only wait for user confirmation when step 7's fork-local delta needs a resolution plan.
 - Do NOT auto-push. Always ask first.
