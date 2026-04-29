@@ -1,120 +1,119 @@
 ---
 name: sync-upstream
-description: 'Sync the latest code from an upstream remote into the current fork. Detects local-only changes and handles conflicts interactively. Use when the user says "sync upstream", "pull upstream", "update from upstream", or similar.'
+description: 'Sync the latest code from an upstream remote into the current fork by cherry-picking each new upstream commit. Preserves fork-local files and changes. Use when the user says "sync upstream", "pull upstream", "update from upstream", or similar.'
 argument-hint: "<upstream_remote/branch, default: upstream/main>"
 ---
 
 # Sync Upstream
 
-Sync the latest code from an upstream repository into the current fork's main branch, preserving any local-only files and changes.
+Sync the latest code from an upstream repository into the current fork by cherry-picking each new upstream commit onto the fork's branch.
 
-This skill is built for **fork-by-copy repos** — forks created by copying a snapshot rather than by `git fork`, so `HEAD` and `<remote>/<branch>` share no merge base. All commands below use two-arg (tree-to-tree) diffs, never three-dot.
+This skill is built for **fork-by-copy repos** — forks created by copying a snapshot rather than by `git fork`, so `HEAD` and `<remote>/<branch>` share no merge base. We work at the **commit level**: identify the last synced upstream sha (the "anchor"), enumerate new upstream commits since then, and cherry-pick them in order. This preserves authorship, commit messages, and PR numbers, and surfaces conflicts in the natural context of a single change.
+
+The previous version of this skill worked at the file level (snapshot the upstream tree, then re-apply fork-local patches). That approach was strictly more dangerous: a fork-local feature whose commits predated the last anchor could silently disappear (real incident: `9b6244d`). Cherry-pick avoids this because each upstream commit's diff is applied independently — fork-local code is only touched when an upstream commit overlaps it.
 
 ## Workflow
 
-1. **Parse arguments**: default to `upstream/main` if no argument given. Split into `<remote>` and `<branch>`.
+1. **Parse arguments**: default to `upstream/main` if none given. Split into `<remote>` and `<branch>`.
 
-2. **Preflight checks**:
-   - Ensure working tree is clean (`git status --porcelain`). If dirty, abort and tell the user to commit or stash first.
-   - Ensure the upstream remote exists. If not, ask the user for the upstream URL and add it.
-   - Checkout the local branch that corresponds to the upstream branch (usually `main`).
+2. **Preflight**:
+   - Working tree clean (`git status --porcelain`). If dirty, abort and tell the user to commit/stash first.
+   - Upstream remote exists. If not, ask for the URL and add it.
+   - Checkout the local branch matching `<branch>` (usually `main`).
 
 3. **Fetch upstream**:
    ```bash
    git fetch <remote> <branch>
    ```
 
-4. **Classify every file** between `HEAD` and `<remote>/<branch>`:
+4. **Find the sync anchor** — the upstream sha most recently merged into the fork. Look for a commit whose message starts with `Sync upstream <remote>/<branch>@<sha>`:
    ```bash
-   git diff --name-status HEAD <remote>/<branch>
+   git log --grep="^Sync upstream ${remote}/${branch}@" -1 --format="%H %s"
    ```
-   Do NOT use three-dot (`HEAD...<remote>/<branch>`) — it requires a merge base and will fail with `fatal: no merge base` on fork-by-copy repos.
+   Parse the `<sha>` from the message.
 
-   Status codes:
-   - `A` — exists in upstream, not in HEAD → new upstream file (add)
-   - `D` — exists in HEAD, not in upstream → local-only file (preserve, never touch)
-   - `M` — exists on both sides with different content → *candidate* for conflict, see step 5
+   **If no anchor found** (first run on this fork): ask the user for the upstream sha the fork was originally copied from. Do NOT auto-guess — confirm before continuing.
 
-5. **Separate real conflicts from drift**. In fork-by-copy repos, most `M` files are drift from prior file-level syncs, not real local edits. Only files touched by non-sync commits are real conflicts.
+5. **List new upstream commits**:
+   ```bash
+   git log --oneline --no-decorate <anchor>..<remote>/<branch>
+   git log --merges --oneline <anchor>..<remote>/<branch>
+   ```
+   Show the user the list. Flag any merge commits — they need `-m 1` during cherry-pick.
 
-   Enumerate files ever touched by a real local commit in one call:
+   **If the range is empty**, exit: nothing to sync.
+
+6. **Sanity-check the anchor**: verify the fork's HEAD tree differs from the anchor's tree only in fork-local files:
+   ```bash
+   git diff --stat <anchor> HEAD
+   ```
+   The output should be a small set of fork-local files (this is the **pre-sync fork-local delta**). If it's huge or includes obvious upstream files, the anchor is wrong — stop and ask the user. Save this delta — step 8 compares against it.
+
+7. **Cherry-pick the range** in chronological order:
+   ```bash
+   git cherry-pick -x <anchor>..<remote>/<branch>
+   ```
+   - `-x` records the original upstream sha in each cherry-picked commit's message (`(cherry picked from commit ...)`) — preserves provenance.
+   - For merge commits in the range, prefer cherry-picking each one with `-m 1` individually, or split the range so the merge commit gets its own invocation.
+
+   **On conflict**: cherry-pick stops with `CHERRY_PICK_HEAD` set. Show the user:
+   - Which commit failed (`git status`)
+   - Which files conflict
+   - The original commit's diff (`git show <orig_sha>`) so they can see intent
+
+   Wait for resolution. After: `git add <files> && git cherry-pick --continue`. If the commit doesn't apply (already there, or not relevant): `git cherry-pick --skip`. If the whole sync should be aborted: `git cherry-pick --abort`.
+
+   When cherry-pick auto-merges (no conflict markers), don't second-guess — the result is correct by definition. Move on.
+
+8. **Verify fork-local deltas survived**. Compare HEAD to upstream's new tip:
+   ```bash
+   git diff --stat <remote>/<branch> HEAD -- ':!.claude*'
+   ```
+   The result should match the pre-sync fork-local delta from step 6 — same files, similar line counts. If a fork-local file shrank unexpectedly, a feature was clobbered — investigate before committing the anchor.
+
+9. **Add the new anchor commit**:
+   ```bash
+   NEW_SHA=$(git rev-parse --short <remote>/<branch>)
+   git commit --allow-empty -m "Sync upstream <remote>/<branch>@${NEW_SHA}"
+   ```
+   The empty commit is the anchor for the next sync. Do NOT auto-push. Ask the user.
+
+10. **Summary**: list the cherry-picked commits, any conflicts that were resolved, the final fork-local delta vs upstream, and ask about pushing.
+
+## Rules
+
+- Always fetch before comparing.
+- Cherry-pick in **chronological order** (oldest first) — `<anchor>..<remote>/<branch>` gives you this naturally.
+- Always use `-x` so the original upstream sha is recorded in the cherry-picked commit. Provenance matters for future debugging.
+- Use `-m 1` for merge commits in the range.
+- Do NOT use three-dot diffs (`A...B`) — they require a merge base, which fork-by-copy repos lack.
+- The anchor commit is the **source of truth** for "what's already been synced." Never skip step 6's sanity check — a wrong anchor either no-ops (too new) or replays already-synced commits (too old).
+- If cherry-pick conflicts, resolve in the upstream commit's context. Each commit's diff is small and self-contained; conflicts usually mean a fork-local feature touches the same area as the upstream change.
+- The anchor commit message format is **load-bearing** — `Sync upstream <remote>/<branch>@<sha>` exactly. Step 4's grep depends on it.
+- Do NOT auto-push. Always ask first.
+- Do NOT silently drop a fork-local file. Step 8's delta check is the safety net.
+
+## Fallback: file-snapshot mode
+
+Only use this if cherry-pick is structurally impossible — e.g. upstream did a history rewrite, or the anchor is unrecoverable and the user can't supply one. The fallback is strictly more dangerous (clobbers everything, relies on symbol verification to catch drops).
+
+1. Classify files: `git diff --name-status HEAD <remote>/<branch>` (A=add, D=local-only preserve, M=candidate).
+2. Compute "real conflict" files = M ∩ files-touched-by-non-sync-local-commits:
    ```bash
    git log --name-only --pretty=format: \
      --invert-grep --grep="^Sync upstream" --grep="^Initial commit" \
      | sort -u
    ```
-   (Extend the `--grep` list if the repo uses other auto-sync commit prefixes. Do NOT pipe through `head` — enumerate the full set.)
-
-   Then partition the `M` set:
-   - **Real conflicts** = M ∩ files-with-real-local-edits
-   - **Drift (safe overwrite)** = M \ files-with-real-local-edits
-
-   Never loop `git log` over each `M` file individually — the single batch command above is the only classification call needed.
-
-6. **Report diff summary** to the user before making any changes:
-   - N new files from upstream (safe)
-   - N drift-only files (safe overwrite)
-   - N local-only files (will be preserved)
-   - N real conflicts (need review) — list these by name
-
-   **Branch point**:
-   - **Zero real conflicts** → proceed end-to-end without pausing (skip step 7 entirely; still run steps 8–10 for any files that intersect `M` ∩ real-local-edits, which by definition is empty here; go to step 11 and commit). Report the final summary afterwards.
-   - **One or more real conflicts** → continue to step 7 and **wait for user confirmation** on the resolution plan before applying anything.
-
-7. **Compute the full fork-local delta per conflict file**. For each real-conflict file `<f>`:
+3. For each real conflict, compute fork-local delta with `git diff <remote>/<branch> HEAD -- <f>` and confirm a re-apply plan with the user.
+4. Extract distinctive symbols from non-sync commits per conflict file:
    ```bash
-   git diff <remote>/<branch> HEAD -- <f>
-   ```
-   Read the hunks as:
-   - `+` lines = in HEAD, missing from upstream → **fork-local; must preserve**
-   - `-` lines = in upstream, missing from HEAD → upstream additions we'll gain after checkout
-
-   This diff shows the **total** fork-local delta, not just what was added since the last sync. That matters because fork-local features can be introduced BEFORE a later sync commit that didn't happen to touch the file, and a "last sync → HEAD" diff will silently miss them. (Real incident: the joystick feature in `vr_streamer.py` was added in commits predating the last sync touching that file, so `git diff LAST_SYNC HEAD -- <f>` reported only the newer recording-indicator delta. The joystick block was dropped on the next sync. Post-mortem commit: `9b6244d`.)
-
-   Enumerate each local hunk to the user and propose a resolution ("apply upstream, then re-append these N lines at `<anchor>`") — wait for confirmation before moving on.
-
-8. **Collect fork-local symbols for post-checkout verification**. For each real-conflict file, extract distinctive symbols introduced by non-sync local commits:
-   ```bash
-   for sha in $(git log --format=%H \
-                 --invert-grep --grep="^Sync upstream" --grep="^Initial commit" \
-                 -- <f>); do
+   for sha in $(git log --format=%H --invert-grep --grep="^Sync upstream" --grep="^Initial commit" -- <f>); do
      git show "$sha" -- <f> | grep '^+' | grep -oE '[A-Za-z_][A-Za-z0-9_]{8,}'
    done | sort -u > /tmp/fork_symbols_<f>.txt
    ```
-   Tune the regex per language if needed (e.g. lower the min-length for short Python identifiers). Keep the list short and distinctive — function/class/flag names, not boilerplate.
+5. Apply: `git checkout <remote>/<branch> -- .`
+6. Re-apply each fork-local delta from step 3.
+7. Verify every symbol from step 4 still exists in the file. Any missing symbol means a fork-local feature was dropped — re-apply before committing.
+8. Commit: `git commit -m "Sync upstream <remote>/<branch>@<sha>"`.
 
-9. **Apply**:
-   ```bash
-   git checkout <remote>/<branch> -- .
-   ```
-   This overwrites every file present in upstream's tree in one shot — both safe updates and drift. Local-only files are untouched because they don't exist in upstream.
-
-10. **Re-apply local deltas + verify**. Re-apply each confirmed patch from step 7 onto the fresh upstream file. Then for every real-conflict file `<f>`:
-    ```bash
-    missing=$(while read -r sym; do grep -qF -- "$sym" <f> || echo "$sym"; done < /tmp/fork_symbols_<f>.txt)
-    [ -n "$missing" ] && echo "MISSING in <f>: $missing"
-    ```
-    Any missing symbol means a fork-local piece of code did not survive — stop and re-apply it before continuing. Do NOT commit until this check is clean for every real-conflict file.
-
-11. **Stage and commit** (no user confirmation needed — the branch point in step 6 already gated this on conflict presence):
-    ```bash
-    git add -A
-    git commit -m "Sync upstream <remote>/<branch>@<short_sha>"
-    ```
-    Do NOT auto-push. Ask the user if they want to push.
-
-12. **Summary**: what was synced, what was preserved, what conflicts were resolved, the symbol-verification result, and any caveats (e.g. anchor-dependent patches that should be runtime-verified).
-
-## Rules
-
-- Always fetch before comparing to get the latest remote state.
-- NEVER silently overwrite local-only changes. The whole point of this skill is to be safe.
-- Preserve local-only files (files that don't exist in upstream).
-- If there are no changes to sync, say so and exit.
-- Do NOT use `git merge` or `git rebase` — this skill works at the file level to avoid unrelated-history issues common in fork-by-copy repos.
-- Do NOT use three-dot diffs (`A...B`) anywhere — they require a merge base.
-- In fork-by-copy repos, `M` does NOT mean conflict. Classify `M` as *drift* vs *real edit* using the batch `git log --invert-grep` command in step 5. Only show diffs and ask the user about *real edits*.
-- **"Last sync commit" is NOT a per-file merge base.** A sync commit that didn't modify file `<f>` leaves older fork-local content in `<f>` untracked by any subsequent baseline. Always compute the fork-local delta as `git diff <remote>/<branch> HEAD -- <f>` (full pairwise against upstream), never as `git diff LAST_SYNC HEAD -- <f>`.
-- Every real-conflict file must pass the symbol-verification step (step 10) before commit. If a fork-local symbol is missing post-checkout, re-apply manually — do not proceed.
-- **Confirmation is gated on real conflicts, not on the sync itself.** If step 5 finds zero real-conflict files, run through apply → verify → commit without pausing — the diff summary in step 6 is informational, not a prompt. Only wait for user confirmation when step 7's fork-local delta needs a resolution plan.
-- Do NOT auto-push. Always ask first.
+The fallback's chief failure mode (which cherry-pick avoids): a fork-local feature added in a commit that predates the last sync may not appear in any "last sync → HEAD" diff if no later commit touched the same file, so the symbol-verification list is the only thing standing between you and a silent drop.
