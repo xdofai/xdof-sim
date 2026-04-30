@@ -16,6 +16,7 @@ from xdof_sim.randomization import (
     _dishrack_plate_joint_name,
     _dishrack_variant_names,
 )
+from xdof_sim.env import project_policy_state
 
 
 def _body_in_subtree(model: mujoco.MjModel, body_id: int, root_body_id: int) -> bool:
@@ -189,7 +190,67 @@ class DishRackRandomizerBoundsTests(unittest.TestCase):
         self.assertFalse(randomizer._bounds_ok(too_close))
 
 
+class ResetArmPoseTests(unittest.TestCase):
+    def _set_policy_state(self, env, state: np.ndarray) -> np.ndarray:
+        env._set_qpos_from_state(np.asarray(state, dtype=np.float32))
+        mujoco.mj_forward(env.model, env.data)
+        return project_policy_state(
+            np.asarray(env.data.qpos, dtype=np.float64),
+            env._qpos_indices,
+            env._gripper_indices,
+        )
+
+    def test_reset_preserves_current_arm_state_without_randomization(self) -> None:
+        env = xdof_sim.make_env(task="bottles", render_cameras=False)
+        try:
+            env.reset(seed=0, randomize=False)
+            target = env.get_init_q().astype(np.float32, copy=True)
+            target[:6] += np.array([0.10, -0.05, 0.08, -0.04, 0.06, -0.03], dtype=np.float32)
+            target[7:13] += np.array([-0.07, 0.05, -0.06, 0.04, -0.03, 0.02], dtype=np.float32)
+            target[6] = 0.25
+            target[13] = 0.75
+            expected = self._set_policy_state(env, target)
+
+            env.reset(seed=1, randomize=False)
+
+            actual = project_policy_state(
+                np.asarray(env.data.qpos, dtype=np.float64),
+                env._qpos_indices,
+                env._gripper_indices,
+            )
+            np.testing.assert_allclose(actual, expected, atol=1e-6)
+        finally:
+            env.close()
+
+    def test_reset_preserves_current_arm_state_across_dishrack_scene_reload(self) -> None:
+        env = xdof_sim.make_env(task="dishrack", scene="hybrid", render_cameras=False)
+        try:
+            env.reset(seed=0, randomize=True)
+            target = env.get_init_q().astype(np.float32, copy=True)
+            target[:6] += np.array([-0.09, 0.04, -0.07, 0.03, -0.05, 0.02], dtype=np.float32)
+            target[7:13] += np.array([0.06, -0.03, 0.05, -0.02, 0.04, -0.01], dtype=np.float32)
+            target[6] = 0.40
+            target[13] = 0.60
+            expected = self._set_policy_state(env, target)
+
+            obs, info = env.reset(seed=1, randomize=True)
+            self.assertIn("randomization", info)
+            self.assertEqual(obs["state"].shape[0], env.single_timestep_action_dim)
+
+            actual = project_policy_state(
+                np.asarray(env.data.qpos, dtype=np.float64),
+                env._qpos_indices,
+                env._gripper_indices,
+            )
+            np.testing.assert_allclose(actual, expected, atol=1e-6)
+        finally:
+            env.close()
+
+
 class DishRackVariantRandomizationTests(unittest.TestCase):
+    def test_removed_dishrack_variant_is_not_enumerated(self) -> None:
+        self.assertNotIn("dish_rack_10", _dishrack_variant_names("dish_rack"))
+
     def test_plate_variant_assets_compile_with_capped_collision_hulls(self) -> None:
         plate_root = Path(__file__).resolve().parents[1] / "xdof_sim" / "models" / "assets" / "task_dishrack" / "plate"
 

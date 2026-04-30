@@ -605,10 +605,11 @@ class SceneRandomizer:
 
         from xdof_sim.scene_variants import apply_scene_variant
 
+        preserved_arm_state = self._env_ref._get_reset_arm_state()
         self._env_ref.reload_from_xml(xml)
         apply_scene_variant(self._env_ref.model, self._scene_variant)
         mujoco.mj_resetData(self._env_ref.model, self._env_ref.data)
-        self._env_ref._set_qpos_from_state(self._env_ref.get_init_q())
+        self._env_ref._set_qpos_from_state(preserved_arm_state)
         mujoco.mj_forward(self._env_ref.model, self._env_ref.data)
 
     def _read_nominals(
@@ -1324,6 +1325,7 @@ class DishRackRandomizer(SceneRandomizer):
             raise RuntimeError("DishRackRandomizer requires a bound env before scene reload")
 
         dish_rack_variant = _dishrack_canonical_variant_name("dish_rack", dish_rack_variant)
+        preserved_arm_state = self._env_ref._get_reset_arm_state()
         normalized_plate_variants = _dishrack_normalize_plate_variants(plate_variants)
         self._set_active_plate_count(len(normalized_plate_variants))
         scene_cache_key = self._scene_model_cache_key(
@@ -1368,7 +1370,7 @@ class DishRackRandomizer(SceneRandomizer):
         self._refresh_collision_metadata()
         apply_scene_variant(self._env_ref.model, self._scene_variant)
         mujoco.mj_resetData(self._env_ref.model, self._env_ref.data)
-        self._env_ref._set_qpos_from_state(self._env_ref.get_init_q())
+        self._env_ref._set_qpos_from_state(preserved_arm_state)
         mujoco.mj_forward(self._env_ref.model, self._env_ref.data)
         self._fixed_body_nominals = None
 
@@ -2251,7 +2253,6 @@ _DISHRACK_VARIANT_ALIASES: dict[str, dict[str, str]] = {
         "DishRack040": "dish_rack_7",
         "DishRack041": "dish_rack_8",
         "DishRack043": "dish_rack_9",
-        "DishRack044": "dish_rack_10",
         "DishRack047": "dish_rack_11",
         "DishRack050": "dish_rack_12",
     },
@@ -2920,10 +2921,11 @@ class InHandTransferRandomizer(SceneRandomizer):
         if env is not None:
             from xdof_sim.scene_variants import apply_scene_variant
 
+            preserved_arm_state = env._get_reset_arm_state()
             env.reload_from_xml(xml)
             apply_scene_variant(env.model, self._scene_variant)
             mujoco.mj_resetData(env.model, env.data)
-            env._set_qpos_from_state(env.get_init_q())
+            env._set_qpos_from_state(preserved_arm_state)
             jnt_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_JOINT, "task_object_joint")
             qadr = env.model.jnt_qposadr[jnt_id]
             w, s = np.cos(yaw / 2), np.sin(yaw / 2)
@@ -2970,10 +2972,11 @@ class InHandTransferRandomizer(SceneRandomizer):
 
         from xdof_sim.scene_variants import apply_scene_variant
 
+        preserved_arm_state = env._get_reset_arm_state()
         env.reload_from_xml(xml)
         apply_scene_variant(env.model, self._scene_variant)
         mujoco.mj_resetData(env.model, env.data)
-        env._set_qpos_from_state(env.get_init_q())
+        env._set_qpos_from_state(preserved_arm_state)
         jnt_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_JOINT, "task_object_joint")
         qadr = env.model.jnt_qposadr[jnt_id]
         env.data.qpos[qadr:qadr + 3] = pos

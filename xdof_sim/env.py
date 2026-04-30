@@ -104,6 +104,7 @@ class MuJoCoYAMEnv(gym.Env):
         self._task: str = ""  # set by make_env after construction
         self._task_spec: SimTaskSpec | None = None
         self._task_evaluator = None
+        self._arm_state_initialized = False
 
         # Populated by reset() when randomize=True; readable by callers.
         self._last_randomization: Any = None
@@ -188,6 +189,7 @@ class MuJoCoYAMEnv(gym.Env):
         self.model = model
         self.model.opt.timestep = self._physics_dt
         self.data = mujoco.MjData(self.model)
+        self._arm_state_initialized = False
         self._camera_provider = None
 
         if self._render_cameras_flag:
@@ -292,10 +294,9 @@ class MuJoCoYAMEnv(gym.Env):
         randomize: bool = True,
     ):
         super().reset(seed=seed)
+        reset_arm_state = self._get_reset_arm_state()
         mujoco.mj_resetData(self.model, self.data)
-
-        init_q = self.get_init_q()  # 14D
-        self._set_qpos_from_state(init_q)
+        self._set_qpos_from_state(reset_arm_state)
         mujoco.mj_forward(self.model, self.data)
 
         # Object randomization: perturb free-jointed scene objects.
@@ -362,6 +363,17 @@ class MuJoCoYAMEnv(gym.Env):
                 # Scale [0, 1] policy space → MuJoCo joint space
                 val = val * _GRIPPER_CTRL_MAX
             self.data.qpos[qpos_idx] = val
+        self._arm_state_initialized = True
+
+    def _get_reset_arm_state(self) -> np.ndarray:
+        """Return the arm state to preserve across scene resets."""
+        if self._arm_state_initialized:
+            return project_policy_state(
+                np.asarray(self.data.qpos, dtype=np.float64),
+                self._qpos_indices,
+                self._gripper_indices,
+            )
+        return self.get_init_q().astype(np.float32, copy=True)
 
     def _step_single(self, action_14d: np.ndarray):
         """Apply a single 14D action and step physics."""
