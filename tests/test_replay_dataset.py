@@ -15,7 +15,8 @@ from xdof_sim.rendering.replay.episode import (
     detect_episode_format,
     load_episode_context,
 )
-from xdof_sim.rendering.replay.types import EpisodeStreams
+from xdof_sim.rendering.replay.runtime import create_replay_env
+from xdof_sim.rendering.replay.types import EpisodeContext, EpisodeStreams
 from xdof_sim.rendering.replay.session import ReplaySession
 from xdof_sim.rendering.replay.timeline import build_replay_timeline
 from xdof_sim.rendering.replay.video import (
@@ -54,6 +55,17 @@ class _FakeDecodedReader:
 
 
 class DatasetEpisodeContextTests(unittest.TestCase):
+    def _fake_delivered_streams(self, episode_dir: Path) -> EpisodeStreams:
+        return EpisodeStreams(
+            episode_dir=episode_dir,
+            actions_left=np.zeros((2, 7), dtype=np.float64),
+            ts_left=np.array([0.0, 0.1], dtype=np.float64),
+            actions_right=np.zeros((2, 7), dtype=np.float64),
+            ts_right=np.array([0.0, 0.1], dtype=np.float64),
+            camera_frames={},
+            camera_ts={},
+        )
+
     @mock.patch("xdof_sim.rendering.replay.episode.load_randomization", autospec=True)
     @mock.patch("xdof_sim.rendering.replay.episode.read_sim_physics_overrides", autospec=True)
     @mock.patch("xdof_sim.rendering.replay.episode.read_sim_config", autospec=True)
@@ -555,6 +567,198 @@ class DatasetEpisodeContextTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "missing leader gripper streams"):
                 _load_delivered_episode_streams(episode_dir, load_recorded_cameras=False)
+
+    @mock.patch("xdof_sim.rendering.replay.episode.load_randomization", autospec=True)
+    @mock.patch("xdof_sim.rendering.replay.episode.load_sim_states", autospec=True)
+    @mock.patch("xdof_sim.rendering.replay.episode._load_delivered_episode_streams", autospec=True)
+    def test_delivered_episode_prefers_recorded_scene_xml_and_loads_integration_state(
+        self,
+        load_streams_mock,
+        load_sim_states_mock,
+        load_randomization_mock,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode_dir = Path(tmpdir) / "sim_load_the_plates_into_the_dish_rack" / "episode_delivered"
+            episode_dir.mkdir(parents=True)
+            (episode_dir / "output.mcap").write_bytes(b"fake")
+            (episode_dir / "scene_assembled.xml").write_text(
+                """
+<mujoco>
+  <compiler meshdir="/old/checkout/xdof_sim/models/assets/" texturedir="/old/checkout/xdof_sim/models/assets/"/>
+  <asset>
+    <mesh name="rack" file="/old/checkout/xdof_sim/models/assets/task_dishrack/dish_rack/DishRack028/visual/DishRack028.obj"/>
+    <mesh name="plate" file="/old/checkout/xdof_sim/models/assets/task_dishrack/plate/current/model.obj"/>
+  </asset>
+</mujoco>
+""".strip()
+            )
+            integration_state = np.arange(12, dtype=np.float64).reshape(3, 4)
+            np.save(episode_dir / "integration_state.npy", integration_state)
+            np.save(episode_dir / "integration_state_sim_time.npy", np.array([0.0, 0.1, 0.2], dtype=np.float64))
+
+            load_streams_mock.return_value = (
+                self._fake_delivered_streams(episode_dir),
+                "load the plates into the dish rack",
+            )
+            qpos = np.zeros((2, 30), dtype=np.float64)
+            qpos_ts = np.array([10.0, 10.1], dtype=np.float64)
+            load_sim_states_mock.return_value = (qpos, qpos_ts)
+            rand_state = object()
+            load_randomization_mock.return_value = rand_state
+
+            context = load_episode_context(episode_dir, load_recorded_cameras=False)
+
+            self.assertEqual(context.episode_format, "delivered")
+            self.assertEqual(context.task, "dishrack")
+            self.assertEqual(context.scene_source, "scene_assembled.xml")
+            self.assertIs(context.rand_state, rand_state)
+            self.assertIsNotNone(context.scene_xml_string)
+            assert context.scene_xml_string is not None
+            self.assertNotIn("/old/checkout", context.scene_xml_string)
+            self.assertIn("task_dishrack/dish_rack/dish_rack_3/visual/DishRack028.obj", context.scene_xml_string)
+            self.assertIn("task_dishrack/plate/plate_0/model.obj", context.scene_xml_string)
+            np.testing.assert_allclose(context.raw_sim_integration_states, integration_state)
+            np.testing.assert_allclose(
+                context.raw_sim_integration_timestamps,
+                np.array([0.0, 0.1, 0.2], dtype=np.float64),
+            )
+            np.testing.assert_allclose(context.initial_scene_integration_state, integration_state[0])
+            self.assertEqual(context.raw_sim_state_spec, 16383)
+
+    def test_delivered_integration_states_are_aligned_to_replay_grid(self) -> None:
+        episode_dir = Path("/tmp/delivered_episode")
+        streams = EpisodeStreams(
+            episode_dir=episode_dir,
+            actions_left=np.zeros((4, 7), dtype=np.float64),
+            ts_left=np.array([0.0, 0.1, 0.2, 0.3], dtype=np.float64),
+            actions_right=np.zeros((4, 7), dtype=np.float64),
+            ts_right=np.array([0.0, 0.1, 0.2, 0.3], dtype=np.float64),
+            camera_frames={},
+            camera_ts={},
+        )
+        context = EpisodeContext(
+            streams=streams,
+            episode_format="delivered",
+            scene="hybrid",
+            task="dishrack",
+            instruction="load plates into tabletop dish rack",
+            rand_state=None,
+            raw_sim_states=np.array([[1.0], [2.0], [3.0], [4.0]], dtype=np.float64),
+            raw_sim_timestamps=np.array([1_777_951_600.0, 1_777_951_600.05, 1_777_951_600.15, 1_777_951_600.25]),
+            raw_sim_integration_states=np.array([[10.0], [20.0], [30.0], [40.0]], dtype=np.float64),
+            raw_sim_integration_timestamps=np.array([132.226, 132.276, 132.376, 132.476], dtype=np.float64),
+            raw_sim_state_spec=16383,
+        )
+
+        timeline = build_replay_timeline(context, control_hz=10.0)
+
+        np.testing.assert_allclose(timeline.grid_ts, np.array([0.0, 0.1, 0.2]))
+        np.testing.assert_allclose(timeline.sim_states[:, 0], np.array([1.0, 2.0, 3.0]))
+        np.testing.assert_allclose(timeline.sim_integration_states[:, 0], np.array([10.0, 20.0, 30.0]))
+
+    @mock.patch("xdof_sim.rendering.replay.episode.load_randomization", autospec=True)
+    @mock.patch("xdof_sim.rendering.replay.episode.load_sim_states", autospec=True)
+    @mock.patch("xdof_sim.rendering.replay.episode._load_delivered_episode_streams", autospec=True)
+    def test_delivered_episode_falls_back_to_randomization_when_scene_xml_missing(
+        self,
+        load_streams_mock,
+        load_sim_states_mock,
+        load_randomization_mock,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode_dir = Path(tmpdir) / "sim_throw_plastic_bottles_in_bin" / "episode_delivered"
+            episode_dir.mkdir(parents=True)
+            (episode_dir / "output.mcap").write_bytes(b"fake")
+            rand_state = object()
+            load_streams_mock.return_value = (
+                self._fake_delivered_streams(episode_dir),
+                "throw plastic bottles in bin",
+            )
+            load_sim_states_mock.return_value = (np.zeros((2, 32), dtype=np.float64), np.array([0.0, 0.1]))
+            load_randomization_mock.return_value = rand_state
+
+            context = load_episode_context(episode_dir, load_recorded_cameras=False)
+
+            self.assertEqual(context.scene_source, "randomization.json")
+            self.assertIs(context.rand_state, rand_state)
+            self.assertIsNone(context.scene_xml_string)
+
+    @mock.patch("xdof_sim.rendering.replay.episode.load_randomization", autospec=True)
+    @mock.patch("xdof_sim.rendering.replay.episode.load_sim_states", autospec=True)
+    @mock.patch("xdof_sim.rendering.replay.episode._load_delivered_episode_streams", autospec=True)
+    def test_delivered_episode_requires_scene_xml_or_randomization(
+        self,
+        load_streams_mock,
+        load_sim_states_mock,
+        load_randomization_mock,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode_dir = Path(tmpdir) / "sim_throw_plastic_bottles_in_bin" / "episode_delivered"
+            episode_dir.mkdir(parents=True)
+            (episode_dir / "output.mcap").write_bytes(b"fake")
+            load_streams_mock.return_value = (
+                self._fake_delivered_streams(episode_dir),
+                "throw plastic bottles in bin",
+            )
+            load_sim_states_mock.return_value = (np.zeros((2, 32), dtype=np.float64), np.array([0.0, 0.1]))
+            load_randomization_mock.return_value = None
+
+            with self.assertRaisesRegex(ValueError, "missing scene_assembled.xml and randomization.json"):
+                load_episode_context(episode_dir, load_recorded_cameras=False)
+
+    @mock.patch("xdof_sim.make_env", autospec=True)
+    def test_create_replay_env_uses_scene_xml_without_reapplying_randomization(self, make_env_mock) -> None:
+        apply_mock = mock.Mock()
+        env = SimpleNamespace(
+            reset=mock.Mock(),
+            model=object(),
+            data=object(),
+            _task_randomizer=SimpleNamespace(apply=apply_mock),
+        )
+        make_env_mock.return_value = env
+        context = SimpleNamespace(
+            scene="hybrid",
+            task="dishrack",
+            scene_xml_string="<mujoco/>",
+            rand_state=object(),
+            physics_overrides=None,
+        )
+
+        returned = create_replay_env(context)
+
+        self.assertIs(returned, env)
+        self.assertEqual(make_env_mock.call_args.kwargs["scene_xml_string"], "<mujoco/>")
+        env.reset.assert_called_once_with(randomize=False)
+        apply_mock.assert_not_called()
+
+    @mock.patch("xdof_sim.make_env", autospec=True)
+    def test_create_replay_env_falls_back_to_randomization_when_scene_xml_fails(self, make_env_mock) -> None:
+        apply_mock = mock.Mock()
+        env = SimpleNamespace(
+            reset=mock.Mock(),
+            model=object(),
+            data=object(),
+            _task_randomizer=SimpleNamespace(apply=apply_mock),
+        )
+        rand_state = object()
+        make_env_mock.side_effect = [ValueError("Error opening file 'missing.obj'"), env]
+        context = SimpleNamespace(
+            streams=SimpleNamespace(episode_dir=Path("/tmp/episode")),
+            scene="hybrid",
+            task="dishrack",
+            scene_xml_string="<mujoco/>",
+            rand_state=rand_state,
+            physics_overrides=None,
+        )
+
+        returned = create_replay_env(context)
+
+        self.assertIs(returned, env)
+        self.assertEqual(make_env_mock.call_count, 2)
+        self.assertEqual(make_env_mock.call_args_list[0].kwargs["scene_xml_string"], "<mujoco/>")
+        self.assertIsNone(make_env_mock.call_args_list[1].kwargs["scene_xml_string"])
+        env.reset.assert_called_once_with(randomize=False)
+        apply_mock.assert_called_once_with(env.model, env.data, rand_state)
 
 
 class DirectActionLoadingTests(unittest.TestCase):

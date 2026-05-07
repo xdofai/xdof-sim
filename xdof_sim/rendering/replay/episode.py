@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ _SWEEP_OLD_QPOS_DIM = 79
 _SWEEP_CURRENT_QPOS_DIM = 86
 _SWEEP_TRASH7_QPOS_ADR = 63
 _SWEEP_PARKED_TRASH7_QPOS = np.array([-1.5, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+_SCENE_ASSET_ROOT_RE = re.compile(r"/(?:[^/\"'<>\s]+/)*xdof_sim/models/assets/?")
 
 
 def detect_episode_format(episode_dir: Path) -> EpisodeFormat:
@@ -144,6 +146,76 @@ def _load_json(path: Path) -> dict[str, Any] | None:
     with open(path) as f:
         payload = json.load(f)
     return payload if isinstance(payload, dict) else None
+
+
+def _local_scene_asset_root() -> Path:
+    import xdof_sim
+
+    return Path(xdof_sim.__file__).resolve().parent / "models" / "assets"
+
+
+def _normalize_recorded_scene_xml(xml: str) -> str:
+    """Make recorded XML asset paths resolvable in the current checkout."""
+    local_asset_root = _local_scene_asset_root().as_posix().rstrip("/") + "/"
+    xml = _SCENE_ASSET_ROOT_RE.sub(local_asset_root, xml)
+
+    # Older delivered XMLs used human-readable dishrack asset directory names
+    # from the collection checkout. This repo stores the same assets under the
+    # canonical variant directories used by the randomizer.
+    try:
+        from xdof_sim.randomization import _DISHRACK_VARIANT_ALIASES
+    except Exception:
+        _DISHRACK_VARIANT_ALIASES = {}
+
+    for kind, aliases in _DISHRACK_VARIANT_ALIASES.items():
+        for alias, canonical in aliases.items():
+            xml = xml.replace(
+                f"task_dishrack/{kind}/{alias}/",
+                f"task_dishrack/{kind}/{canonical}/",
+            )
+    return xml
+
+
+def load_scene_assembled_xml(episode_dir: Path) -> str | None:
+    """Load the recorded assembled scene XML, if present."""
+    path = episode_dir / "scene_assembled.xml"
+    if not path.exists():
+        return None
+    xml = path.read_text()
+    if not xml.strip():
+        raise ValueError(f"scene_assembled.xml is empty in {episode_dir}")
+    return _normalize_recorded_scene_xml(xml)
+
+
+def _mj_state_integration_spec() -> int:
+    import mujoco
+
+    return int(mujoco.mjtState.mjSTATE_INTEGRATION.value)
+
+
+def load_integration_states(episode_dir: Path) -> tuple[np.ndarray | None, np.ndarray | None, int | None]:
+    """Load delivered mjSTATE_INTEGRATION snapshots when present."""
+    path = episode_dir / "integration_state.npy"
+    if not path.exists():
+        return None, None, None
+
+    states = np.asarray(np.load(path))
+    if states.ndim != 2 or len(states) == 0:
+        raise ValueError(f"Expected integration_state.npy shape (T, state_size), got {states.shape} from {path}")
+
+    timestamps = None
+    sim_time_path = episode_dir / "integration_state_sim_time.npy"
+    if sim_time_path.exists():
+        timestamps = np.asarray(np.load(sim_time_path), dtype=np.float64)
+        if timestamps.ndim != 1:
+            raise ValueError(f"Expected 1D integration timestamps in {sim_time_path}, got {timestamps.shape}")
+        if len(timestamps) != len(states):
+            raise ValueError(
+                f"integration_state_sim_time.npy length mismatch: {len(timestamps)} vs {len(states)} "
+                f"in {episode_dir}"
+            )
+
+    return states, timestamps, _mj_state_integration_spec()
 
 
 def _extract_recorded_physics_overrides(metadata: dict[str, Any]) -> dict[str, Any] | None:
@@ -1172,6 +1244,26 @@ def load_episode_context(episode_dir: Path, *, load_recorded_cameras: bool = Tru
     raw = load_sim_states(episode_dir)
     raw_states, raw_timestamps = (raw if raw is not None else (None, None))
     raw_states = _maybe_upgrade_exact_qpos_for_task(task, raw_states)
+    raw_integration_states = None
+    raw_integration_timestamps = None
+    raw_state_spec = None
+    scene_xml_string = None
+    scene_source = None
+    if episode_format == "delivered":
+        rand_state = load_randomization(episode_dir)
+        scene_xml_string = load_scene_assembled_xml(episode_dir)
+        if scene_xml_string is not None:
+            scene_source = "scene_assembled.xml"
+        else:
+            if rand_state is None:
+                raise ValueError(
+                    f"Delivered episode {episode_dir} is missing scene_assembled.xml and "
+                    "randomization.json; refusing to render a default scene."
+                )
+            scene_source = "randomization.json"
+        raw_integration_states, raw_integration_timestamps, raw_state_spec = load_integration_states(episode_dir)
+    else:
+        rand_state = load_randomization(episode_dir)
     replay_actions = None
     replay_timestamps = None
     replay_state_alignment = "initial"
@@ -1192,10 +1284,20 @@ def load_episode_context(episode_dir: Path, *, load_recorded_cameras: bool = Tru
         scene=scene,
         task=task,
         instruction=instruction,
-        rand_state=load_randomization(episode_dir),
+        rand_state=rand_state,
         raw_sim_states=raw_states,
         raw_sim_timestamps=raw_timestamps,
+        scene_xml_string=scene_xml_string,
+        scene_source=scene_source,
+        raw_sim_integration_states=raw_integration_states,
+        raw_sim_integration_timestamps=raw_integration_timestamps,
+        raw_sim_state_spec=raw_state_spec,
         initial_scene_qpos=initial_scene_qpos,
+        initial_scene_integration_state=(
+            raw_integration_states[0].copy()
+            if raw_integration_states is not None and len(raw_integration_states) > 0
+            else None
+        ),
         replay_actions=replay_actions,
         replay_timestamps=replay_timestamps,
         replay_state_alignment=replay_state_alignment,

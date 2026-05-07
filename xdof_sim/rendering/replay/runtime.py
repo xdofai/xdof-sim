@@ -16,20 +16,42 @@ def create_replay_env(
     """Create an xdof-sim environment configured for the episode."""
     import xdof_sim
 
-    env = xdof_sim.make_env(
+    make_env_kwargs = dict(
         scene=context.scene,
         task=context.task,
         render_cameras=render_cameras,
         camera_width=camera_width,
         camera_height=camera_height,
+        scene_xml_string=context.scene_xml_string,
         **dict(context.physics_overrides or {}),
     )
+    using_scene_xml = context.scene_xml_string is not None
+    try:
+        env = xdof_sim.make_env(**make_env_kwargs)
+    except ValueError as exc:
+        if context.scene_xml_string is None or context.rand_state is None:
+            raise
+        episode_dir = getattr(getattr(context, "streams", None), "episode_dir", "<unknown>")
+        print(
+            f"  Warning: failed to load scene_assembled.xml for {episode_dir}: {exc}. "
+            "Falling back to recorded randomization.json."
+        )
+        make_env_kwargs["scene_xml_string"] = None
+        env = xdof_sim.make_env(**make_env_kwargs)
+        using_scene_xml = False
+
     env.reset(randomize=False)
 
-    if context.rand_state is not None:
+    if not using_scene_xml and context.rand_state is not None:
         randomizer = getattr(env, "_task_randomizer", None)
         if randomizer is not None:
             randomizer.apply(env.model, env.data, context.rand_state)
+
+    env._replay_scene_source = (
+        "scene_assembled.xml"
+        if using_scene_xml
+        else ("randomization.json" if context.rand_state is not None else context.scene_source)
+    )
 
     return env
 
@@ -45,7 +67,7 @@ def create_replay_session(context, *, mode: ReplayMode = "auto") -> tuple[Replay
         timeline.grid_ts,
         replay_ctrls=context.replay_ctrls,
         sim_states=timeline.sim_states,
-        sim_integration_states=context.raw_sim_integration_states,
+        sim_integration_states=timeline.sim_integration_states,
         sim_state_spec=context.raw_sim_state_spec,
         sim_qvels=context.raw_sim_qvels,
         sim_acts=context.raw_sim_acts,

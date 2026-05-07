@@ -95,7 +95,12 @@ _TASK_SPECS: tuple[SimTaskSpec, ...] = (
         name="load_plates_into_dish_rack",
         env_task="dishrack",
         prompt="load plates into tabletop dish rack",
-        aliases=("sim_load_plates_into_tabletop_dish_rack", "dishrack"),
+        aliases=(
+            "sim_load_plates_into_tabletop_dish_rack",
+            "sim_load_the_plates_into_the_dish_rack",
+            "load the plates into the dish rack",
+            "dishrack",
+        ),
     ),
     SimTaskSpec(
         name="set_up_chess_pieces_on_board",

@@ -40,7 +40,10 @@ class EpisodeContext:
     rand_state: Any | None
     raw_sim_states: np.ndarray | None
     raw_sim_timestamps: np.ndarray | None
+    scene_xml_string: str | None = None
+    scene_source: str | None = None
     raw_sim_integration_states: np.ndarray | None = None
+    raw_sim_integration_timestamps: np.ndarray | None = None
     raw_sim_state_spec: int | None = None
     raw_sim_ctrls: np.ndarray | None = None
     initial_scene_qpos: np.ndarray | None = None
@@ -68,5 +71,6 @@ class ReplayTimeline:
     actions: np.ndarray
     grid_ts: np.ndarray
     sim_states: np.ndarray | None
+    sim_integration_states: np.ndarray | None = None
     sim_state_kind: ReplayStateKind = "qpos"
     sim_state_alignment: ReplayStateAlignment = "initial"

@@ -60,6 +60,49 @@ def align_sim_states(
     return sample_hold_align(raw_qposes, aligned_ts, grid_ts)
 
 
+def _normalize_raw_timestamps_for_grid(
+    context: EpisodeContext,
+    timestamps: np.ndarray,
+    grid_ts: np.ndarray,
+) -> np.ndarray:
+    aligned_ts = np.asarray(timestamps, dtype=np.float64)
+    if (
+        context.episode_format == "delivered"
+        and len(aligned_ts) > 0
+        and len(grid_ts) > 0
+        and grid_ts[0] < 1e6
+        and abs(float(aligned_ts[0] - grid_ts[0])) > 1.0
+    ):
+        return aligned_ts - aligned_ts[0]
+    return aligned_ts
+
+
+def align_sim_integration_states(
+    context: EpisodeContext,
+    grid_ts: np.ndarray,
+) -> np.ndarray | None:
+    """Align mjSTATE_INTEGRATION snapshots to the replay clock."""
+    states = context.raw_sim_integration_states
+    if states is None:
+        return None
+
+    timestamps = context.raw_sim_integration_timestamps
+    if timestamps is None:
+        if (
+            context.raw_sim_timestamps is not None
+            and context.raw_sim_states is not None
+            and len(states) == len(context.raw_sim_states)
+        ):
+            timestamps = context.raw_sim_timestamps
+        elif len(states) == len(grid_ts):
+            return states
+        else:
+            return None
+
+    aligned_ts = _normalize_raw_timestamps_for_grid(context, timestamps, grid_ts)
+    return sample_hold_align(states, aligned_ts, grid_ts)
+
+
 def build_replay_timeline(context: EpisodeContext, control_hz: float) -> ReplayTimeline:
     """Build the aligned action/qpos timeline used by the viewer."""
     if context.replay_actions is not None and context.replay_timestamps is not None:
@@ -67,6 +110,7 @@ def build_replay_timeline(context: EpisodeContext, control_hz: float) -> ReplayT
             actions=context.replay_actions.astype(np.float32, copy=False),
             grid_ts=np.asarray(context.replay_timestamps, dtype=np.float64),
             sim_states=context.raw_sim_states,
+            sim_integration_states=context.raw_sim_integration_states,
             sim_state_kind=context.replay_state_kind,
             sim_state_alignment=context.replay_state_alignment,
         )
@@ -79,10 +123,12 @@ def build_replay_timeline(context: EpisodeContext, control_hz: float) -> ReplayT
         control_hz=control_hz,
     )
     sim_states = align_sim_states(context, grid_ts)
+    sim_integration_states = align_sim_integration_states(context, grid_ts)
     return ReplayTimeline(
         actions=actions,
         grid_ts=grid_ts,
         sim_states=sim_states,
+        sim_integration_states=sim_integration_states,
         sim_state_kind=context.replay_state_kind,
         sim_state_alignment=context.replay_state_alignment,
     )

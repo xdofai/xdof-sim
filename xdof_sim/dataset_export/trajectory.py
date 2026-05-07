@@ -121,4 +121,5 @@ def build_export_trajectory(
         actions=actions,
         qpos=aligned_qpos,
         initial_qpos=aligned_qpos[0].copy(),
+        scene_source=getattr(env, "_replay_scene_source", context.scene_source),
     )

@@ -86,6 +86,7 @@ def build_collected_entry(
     return {
         "batch_name": config.batch_name,
         "source_delivery": trajectory.source_delivery,
+        "scene_source": trajectory.scene_source,
         "task_name": trajectory.task_name,
         "episode_id": trajectory.episode_id,
         "index_name": "collected",
