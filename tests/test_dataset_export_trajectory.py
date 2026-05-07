@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 
@@ -24,6 +26,12 @@ class FakeEnv:
 
     def project_state_from_qpos(self, qpos: np.ndarray) -> np.ndarray:
         return qpos[:4].astype(np.float32) * 2.0
+
+
+class FakeIntegrationEnv(FakeEnv):
+    def __init__(self) -> None:
+        self.model = SimpleNamespace(nq=5)
+        self.data = SimpleNamespace(qpos=np.zeros(5, dtype=np.float64))
 
 
 def make_context() -> EpisodeContext:
@@ -156,6 +164,61 @@ class ExportTrajectoryTests(unittest.TestCase):
                 dtype=np.float32,
             ),
         )
+        self.assertEqual(traj.state_source, "sim_state.mcap:/sim_state/qpos")
+
+    @mock.patch("xdof_sim.dataset_export.trajectory.mujoco.mj_forward", autospec=True)
+    @mock.patch("xdof_sim.dataset_export.trajectory.mujoco.mj_setState", autospec=True)
+    @mock.patch("xdof_sim.dataset_export.trajectory.mujoco.mj_stateSize", autospec=True)
+    def test_build_export_trajectory_prefers_integration_state_source(
+        self,
+        mj_state_size_mock,
+        mj_set_state_mock,
+        _mj_forward_mock,
+    ) -> None:
+        context = make_context()
+        context = EpisodeContext(
+            **{
+                **context.__dict__,
+                "raw_sim_integration_states": np.array(
+                    [
+                        [10.0, 100.0, 1000.0],
+                        [20.0, 200.0, 2000.0],
+                        [30.0, 300.0, 3000.0],
+                    ],
+                    dtype=np.float64,
+                ),
+                "raw_sim_integration_timestamps": np.array([42.0, 42.5, 43.0], dtype=np.float64),
+                "raw_sim_state_spec": 16383,
+            }
+        )
+        env = FakeIntegrationEnv()
+        mj_state_size_mock.return_value = 3
+
+        def _fake_set_state(_model, data, state, _spec):
+            data.qpos[:] = np.array(
+                [state[0], state[1], state[2], state[0] + 1.0, 9.0],
+                dtype=np.float64,
+            )
+
+        mj_set_state_mock.side_effect = _fake_set_state
+
+        traj = build_export_trajectory(context, env, fps=4.0)
+
+        self.assertEqual(traj.state_source, "integration_state.npy")
+        np.testing.assert_allclose(traj.timestamps, np.array([0.0, 0.25, 0.5, 0.75]))
+        np.testing.assert_allclose(
+            traj.qpos,
+            np.array(
+                [
+                    [10.0, 100.0, 1000.0, 11.0, 9.0],
+                    [10.0, 100.0, 1000.0, 11.0, 9.0],
+                    [20.0, 200.0, 2000.0, 21.0, 9.0],
+                    [20.0, 200.0, 2000.0, 21.0, 9.0],
+                ],
+                dtype=np.float32,
+            ),
+        )
+        self.assertEqual(mj_set_state_mock.call_count, 4)
 
 
 if __name__ == "__main__":

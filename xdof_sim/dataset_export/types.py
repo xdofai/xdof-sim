@@ -45,6 +45,7 @@ class ExportTrajectory:
     qpos: np.ndarray
     initial_qpos: np.ndarray
     scene_source: str | None = None
+    state_source: str | None = None
 
 
 @dataclass(frozen=True)

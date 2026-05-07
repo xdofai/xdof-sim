@@ -75,6 +75,7 @@ def write_episode_metadata(
         "source_delivery": trajectory.source_delivery,
         "source_episode_dir": str(trajectory.source_episode_dir),
         "scene_source": trajectory.scene_source,
+        "state_source": trajectory.state_source,
         "num_steps": int(len(trajectory.timestamps)),
         "fps": config.fps,
         "image_width": config.image_width,

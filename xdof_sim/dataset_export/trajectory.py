@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import mujoco
 import numpy as np
 
 from xdof_sim.dataset_export.metadata import (
@@ -33,6 +34,33 @@ def normalize_sim_timestamps(context: EpisodeContext) -> np.ndarray:
     return raw_ts
 
 
+def normalize_integration_timestamps(context: EpisodeContext) -> np.ndarray | None:
+    """Shift integration-state timestamps onto the action clock when present."""
+    if context.raw_sim_integration_states is None:
+        return None
+    raw_ts = context.raw_sim_integration_timestamps
+    if raw_ts is None:
+        if (
+            context.raw_sim_timestamps is not None
+            and context.raw_sim_states is not None
+            and len(context.raw_sim_integration_states) == len(context.raw_sim_states)
+        ):
+            return normalize_sim_timestamps(context)
+        return None
+
+    ts = np.asarray(raw_ts, dtype=np.float64)
+    if len(ts) == 0:
+        raise ValueError("Episode context contains no integration-state timestamps")
+    if (
+        context.episode_format == "delivered"
+        and len(context.streams.ts_left) > 0
+        and context.streams.ts_left[0] < 1e6
+        and abs(float(ts[0] - context.streams.ts_left[0])) > 1.0
+    ):
+        return ts - ts[0]
+    return ts
+
+
 def build_export_grid(
     *,
     starts: list[float],
@@ -60,6 +88,30 @@ def build_export_grid(
     return window_start + np.arange(num_steps, dtype=np.float64) / float(fps)
 
 
+def _extract_qpos_from_integration_states(
+    env,
+    integration_states: np.ndarray,
+    state_spec: int | None,
+) -> np.ndarray:
+    if state_spec is None:
+        raise ValueError("integration_state.npy is present but the MuJoCo state spec is missing")
+
+    states = np.asarray(integration_states, dtype=np.float64)
+    expected_size = mujoco.mj_stateSize(env.model, state_spec)
+    if states.ndim != 2 or states.shape[1] != expected_size:
+        raise ValueError(
+            f"integration_state.npy shape {states.shape} does not match "
+            f"mj_stateSize(model, {state_spec})={expected_size}"
+        )
+
+    qpos = np.empty((len(states), env.model.nq), dtype=np.float64)
+    for idx, state in enumerate(states):
+        mujoco.mj_setState(env.model, env.data, state, state_spec)
+        mujoco.mj_forward(env.model, env.data)
+        qpos[idx] = np.asarray(env.data.qpos, dtype=np.float64).copy()
+    return qpos
+
+
 def build_export_trajectory(
     context: EpisodeContext,
     env,
@@ -69,24 +121,29 @@ def build_export_trajectory(
     source_delivery: str | None = None,
 ) -> ExportTrajectory:
     """Build aligned states/actions/qpos on the requested export clock."""
-    if context.raw_sim_states is None or context.raw_sim_timestamps is None:
-        raise ValueError("Dataset export requires raw sim states for exact qpos replay")
+    integration_ts = normalize_integration_timestamps(context)
+    use_integration_state = context.raw_sim_integration_states is not None and integration_ts is not None
+    if not use_integration_state and (context.raw_sim_states is None or context.raw_sim_timestamps is None):
+        raise ValueError("Dataset export requires integration_state.npy or raw sim qpos for exact replay")
 
-    qpos_ts = normalize_sim_timestamps(context)
-    qpos = np.asarray(context.raw_sim_states, dtype=np.float64)
-    if qpos.ndim != 2 or len(qpos) == 0:
-        raise ValueError(f"Expected qpos shape (T, nq), got {qpos.shape}")
+    if use_integration_state:
+        state_ts = integration_ts
+    else:
+        state_ts = normalize_sim_timestamps(context)
+        qpos = np.asarray(context.raw_sim_states, dtype=np.float64)
+        if qpos.ndim != 2 or len(qpos) == 0:
+            raise ValueError(f"Expected qpos shape (T, nq), got {qpos.shape}")
 
     grid_ts = build_export_grid(
         starts=[
             float(context.streams.ts_left[0]),
             float(context.streams.ts_right[0]),
-            float(qpos_ts[0]),
+            float(state_ts[0]),
         ],
         ends=[
             float(context.streams.ts_left[-1]),
             float(context.streams.ts_right[-1]),
-            float(qpos_ts[-1]),
+            float(state_ts[-1]),
         ],
         fps=fps,
     )
@@ -97,7 +154,26 @@ def build_export_trajectory(
         [left.astype(np.float32, copy=False), right.astype(np.float32, copy=False)],
         axis=1,
     )
-    aligned_qpos = sample_hold_align(qpos, qpos_ts, grid_ts).astype(np.float32, copy=False)
+    if use_integration_state:
+        assert integration_ts is not None
+        aligned_integration_states = sample_hold_align(
+            np.asarray(context.raw_sim_integration_states, dtype=np.float64),
+            integration_ts,
+            grid_ts,
+        )
+        qpos = _extract_qpos_from_integration_states(
+            env,
+            aligned_integration_states,
+            context.raw_sim_state_spec,
+        )
+        state_source = "integration_state.npy"
+    else:
+        qpos = np.asarray(context.raw_sim_states, dtype=np.float64)
+        aligned_qpos_ts = state_ts
+        qpos = sample_hold_align(qpos, aligned_qpos_ts, grid_ts)
+        state_source = "sim_state.mcap:/sim_state/qpos"
+
+    aligned_qpos = qpos.astype(np.float32, copy=False)
     states = np.stack(
         [env.project_state_from_qpos(frame) for frame in aligned_qpos],
         axis=0,
@@ -122,4 +198,5 @@ def build_export_trajectory(
         qpos=aligned_qpos,
         initial_qpos=aligned_qpos[0].copy(),
         scene_source=getattr(env, "_replay_scene_source", context.scene_source),
+        state_source=state_source,
     )
