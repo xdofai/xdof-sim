@@ -122,17 +122,17 @@ def build_export_trajectory(
 ) -> ExportTrajectory:
     """Build aligned states/actions/qpos on the requested export clock."""
     integration_ts = normalize_integration_timestamps(context)
-    use_integration_state = context.raw_sim_integration_states is not None and integration_ts is not None
-    if not use_integration_state and (context.raw_sim_states is None or context.raw_sim_timestamps is None):
-        raise ValueError("Dataset export requires integration_state.npy or raw sim qpos for exact replay")
-
-    if use_integration_state:
-        state_ts = integration_ts
-    else:
-        state_ts = normalize_sim_timestamps(context)
-        qpos = np.asarray(context.raw_sim_states, dtype=np.float64)
-        if qpos.ndim != 2 or len(qpos) == 0:
-            raise ValueError(f"Expected qpos shape (T, nq), got {qpos.shape}")
+    if context.raw_sim_integration_states is None:
+        raise ValueError(
+            "Dataset export/render requires integration_state.npy; "
+            "refusing to render from sim_state.mcap qpos."
+        )
+    if integration_ts is None:
+        raise ValueError(
+            "Dataset export/render requires integration_state.npy timestamps; "
+            "refusing to render from sim_state.mcap qpos."
+        )
+    state_ts = integration_ts
 
     grid_ts = build_export_grid(
         starts=[
@@ -154,24 +154,17 @@ def build_export_trajectory(
         [left.astype(np.float32, copy=False), right.astype(np.float32, copy=False)],
         axis=1,
     )
-    if use_integration_state:
-        assert integration_ts is not None
-        aligned_integration_states = sample_hold_align(
-            np.asarray(context.raw_sim_integration_states, dtype=np.float64),
-            integration_ts,
-            grid_ts,
-        )
-        qpos = _extract_qpos_from_integration_states(
-            env,
-            aligned_integration_states,
-            context.raw_sim_state_spec,
-        )
-        state_source = "integration_state.npy"
-    else:
-        qpos = np.asarray(context.raw_sim_states, dtype=np.float64)
-        aligned_qpos_ts = state_ts
-        qpos = sample_hold_align(qpos, aligned_qpos_ts, grid_ts)
-        state_source = "sim_state.mcap:/sim_state/qpos"
+    aligned_integration_states = sample_hold_align(
+        np.asarray(context.raw_sim_integration_states, dtype=np.float64),
+        integration_ts,
+        grid_ts,
+    )
+    qpos = _extract_qpos_from_integration_states(
+        env,
+        aligned_integration_states,
+        context.raw_sim_state_spec,
+    )
+    state_source = "integration_state.npy"
 
     aligned_qpos = qpos.astype(np.float32, copy=False)
     states = np.stack(

@@ -120,51 +120,9 @@ class ExportTrajectoryTests(unittest.TestCase):
         grid = build_export_grid(starts=[0.0, 0.1, 0.2], ends=[1.1, 0.8, 0.9], fps=4.0)
         np.testing.assert_allclose(grid, np.array([0.2, 0.45]))
 
-    def test_build_export_trajectory_aligns_actions_and_qpos(self) -> None:
-        traj = build_export_trajectory(make_context(), FakeEnv(), fps=4.0)
-
-        self.assertEqual(traj.episode_id, "episode_123")
-        self.assertEqual(traj.source_delivery, "sim_spell_cat")
-        self.assertEqual(traj.task_name, "sim_spell_cat")
-        self.assertEqual(traj.camera_names, ("top", "left", "right"))
-        np.testing.assert_allclose(traj.timestamps, np.array([0.0, 0.25, 0.5, 0.75]))
-        np.testing.assert_allclose(
-            traj.actions,
-            np.array(
-                [
-                    [1.0, 10.0, 4.0, 40.0],
-                    [1.0, 10.0, 4.0, 40.0],
-                    [2.0, 20.0, 5.0, 50.0],
-                    [2.0, 20.0, 5.0, 50.0],
-                ],
-                dtype=np.float32,
-            ),
-        )
-        np.testing.assert_allclose(
-            traj.qpos,
-            np.array(
-                [
-                    [0.1, 0.2, 0.3, 0.4, 9.0],
-                    [0.1, 0.2, 0.3, 0.4, 9.0],
-                    [0.5, 0.6, 0.7, 0.8, 9.0],
-                    [0.5, 0.6, 0.7, 0.8, 9.0],
-                ],
-                dtype=np.float32,
-            ),
-        )
-        np.testing.assert_allclose(
-            traj.states,
-            np.array(
-                [
-                    [0.2, 0.4, 0.6, 0.8],
-                    [0.2, 0.4, 0.6, 0.8],
-                    [1.0, 1.2, 1.4, 1.6],
-                    [1.0, 1.2, 1.4, 1.6],
-                ],
-                dtype=np.float32,
-            ),
-        )
-        self.assertEqual(traj.state_source, "sim_state.mcap:/sim_state/qpos")
+    def test_build_export_trajectory_requires_integration_state(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires integration_state.npy"):
+            build_export_trajectory(make_context(), FakeEnv(), fps=4.0)
 
     @mock.patch("xdof_sim.dataset_export.trajectory.mujoco.mj_forward", autospec=True)
     @mock.patch("xdof_sim.dataset_export.trajectory.mujoco.mj_setState", autospec=True)
