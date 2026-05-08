@@ -136,7 +136,8 @@ def main() -> None:
     monitor_parser.add_argument("--host", default="127.0.0.1")
     monitor_parser.add_argument("--port", type=int, default=8091)
     monitor_parser.add_argument("--s3-input-prefix", required=True)
-    monitor_parser.add_argument("--staging-root", required=True)
+    monitor_parser.add_argument("--s3-output-root", default=None)
+    monitor_parser.add_argument("--staging-root", default=None)
     monitor_parser.add_argument("--far-root", default=None)
     monitor_parser.add_argument("--source-aws-profile", default=None)
     monitor_parser.add_argument("--staging-aws-profile", default=None)
@@ -237,12 +238,15 @@ def main() -> None:
         return
 
     if args.command == "monitor":
+        monitor_root = args.s3_output_root or args.staging_root
+        if not monitor_root:
+            parser.error("monitor requires --s3-output-root or --staging-root")
         serve_monitor(
             host=args.host,
             port=args.port,
             config=MonitorConfig(
                 s3_input_prefix=args.s3_input_prefix,
-                staging_root=args.staging_root,
+                staging_root=monitor_root,
                 far_root=args.far_root,
                 source_aws_profile=args.source_aws_profile,
                 staging_aws_profile=args.staging_aws_profile,

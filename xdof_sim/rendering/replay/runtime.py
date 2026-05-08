@@ -23,6 +23,7 @@ def create_replay_env(
         camera_width=camera_width,
         camera_height=camera_height,
         scene_xml_string=context.scene_xml_string,
+        enable_task_randomizer=context.scene_xml_string is None,
         **dict(context.physics_overrides or {}),
     )
     using_scene_xml = context.scene_xml_string is not None
@@ -37,6 +38,7 @@ def create_replay_env(
             "Falling back to recorded randomization.json."
         )
         make_env_kwargs["scene_xml_string"] = None
+        make_env_kwargs["enable_task_randomizer"] = True
         env = xdof_sim.make_env(**make_env_kwargs)
         using_scene_xml = False
 

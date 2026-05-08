@@ -144,6 +144,7 @@ def make_env(
     scene_xml: str | Path | None = None,
     scene_xml_string: str | None = None,
     scene_xml_transform_options=None,
+    enable_task_randomizer: bool = True,
     **kwargs,
 ) -> MuJoCoYAMEnv:
     """Create a MuJoCo YAM bimanual environment.
@@ -162,6 +163,9 @@ def make_env(
             tasks. Mutually exclusive with ``scene_xml``.
         scene_xml_transform_options: Optional runtime XML transform options for
             model-swapping tasks such as ``inhand_transfer``.
+        enable_task_randomizer: Whether to attach and prepare the task
+            randomizer. Replay/export callers with a fully assembled scene XML
+            should disable this so the randomizer cannot reload the model.
         **kwargs: Additional kwargs passed to MuJoCoYAMEnv.
 
     Returns:
@@ -310,7 +314,7 @@ def make_env(
                 env.model.cam_fovy[cam_id] = wrist_fov
                 env.model.cam_pos[cam_id][1] -= clearance_offset
 
-    base_randomizer = get_task_randomizer(env_task)
+    base_randomizer = get_task_randomizer(env_task) if enable_task_randomizer else None
     if base_randomizer is not None:
         randomizer = base_randomizer.clone()
         randomizer.bind_env(env, scene_variant=scene)

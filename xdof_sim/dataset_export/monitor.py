@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 import re
 import shlex
 import subprocess
@@ -17,7 +17,7 @@ import time
 from typing import Any
 
 from xdof_sim.dataset_export.s3_source import discover_episode_sources, shard_episode_sources
-from xdof_sim.dataset_export.s3_utils import parse_s3_uri, run_aws
+from xdof_sim.dataset_export.s3_utils import copy_s3_object_to_local, list_s3_objects, parse_s3_uri, run_aws
 
 
 _EPISODE_DIR_RE = re.compile(r"--episode-dir\s+(\S+)")
@@ -25,6 +25,10 @@ _GPU_RE = re.compile(r"--gpu-id\s+(\d+)")
 _DELIVERY_RE = re.compile(r"--source-delivery\s+(\S+)")
 _SHARD_RE = re.compile(r"shard_(\d+)")
 _RESUME_RE = re.compile(r"resume[_a-zA-Z0-9]*_shard(\d+)")
+_STATUS_RE = re.compile(r"status_shard_(\d+)\.json$")
+_COLLECTED_SHARD_RE = re.compile(r"collected_shard_(\d+)\.json$")
+_FAILURES_SHARD_RE = re.compile(r"failures_shard_(\d+)\.json$")
+_EPISODE_NAME_RE = re.compile(r"^episode_")
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,15 @@ class MonitorConfig:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _aws_ls(
@@ -105,6 +118,159 @@ def _list_metadata_entries(
             "size_bytes": int(size_str),
         }
     return entries
+
+
+def _load_metadata_json_objects(
+    s3_uri: str,
+    pattern: re.Pattern[str],
+    *,
+    aws_profile: str | None = None,
+    aws_region: str | None = None,
+) -> tuple[dict[int, dict[str, Any]], str | None]:
+    metadata_uri = parse_s3_uri(s3_uri)
+    try:
+        objects = list_s3_objects(
+            metadata_uri.uri,
+            aws_profile=aws_profile,
+            aws_region=aws_region,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        stdout = (exc.stdout or "").strip()
+        return {}, stderr or stdout or str(exc)
+
+    values: dict[int, dict[str, Any]] = {}
+    cache_root = Path(os.environ.get("XDOF_EXPORT_MONITOR_CACHE", "/tmp/xdof_export_monitor"))
+    for obj in objects:
+        name = PurePosixPath(obj.key).name
+        match = pattern.match(name)
+        if match is None:
+            continue
+        shard_index = int(match.group(1))
+        try:
+            local_path = copy_s3_object_to_local(
+                obj.uri,
+                cache_root / metadata_uri.bucket / obj.key,
+                aws_profile=aws_profile,
+                aws_region=aws_region,
+            )
+            payload = json.loads(local_path.read_text())
+            if isinstance(payload, dict):
+                values[shard_index] = payload
+        except Exception as exc:
+            values[shard_index] = {"_error": str(exc), "shard_index": shard_index}
+    return values, None
+
+
+def _load_metadata_json_lists(
+    s3_uri: str,
+    pattern: re.Pattern[str],
+    *,
+    aws_profile: str | None = None,
+    aws_region: str | None = None,
+) -> tuple[dict[int, list[dict[str, Any]]], str | None]:
+    metadata_uri = parse_s3_uri(s3_uri)
+    try:
+        objects = list_s3_objects(
+            metadata_uri.uri,
+            aws_profile=aws_profile,
+            aws_region=aws_region,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        stdout = (exc.stdout or "").strip()
+        return {}, stderr or stdout or str(exc)
+
+    values: dict[int, list[dict[str, Any]]] = {}
+    cache_root = Path(os.environ.get("XDOF_EXPORT_MONITOR_CACHE", "/tmp/xdof_export_monitor"))
+    for obj in objects:
+        name = PurePosixPath(obj.key).name
+        match = pattern.match(name)
+        if match is None:
+            continue
+        shard_index = int(match.group(1))
+        try:
+            local_path = copy_s3_object_to_local(
+                obj.uri,
+                cache_root / metadata_uri.bucket / obj.key,
+                aws_profile=aws_profile,
+                aws_region=aws_region,
+            )
+            payload = json.loads(local_path.read_text())
+            if isinstance(payload, list):
+                values[shard_index] = [item for item in payload if isinstance(item, dict)]
+            else:
+                values[shard_index] = []
+        except Exception as exc:
+            values[shard_index] = [{"_error": str(exc), "shard_index": shard_index}]
+    return values, None
+
+
+def _failure_error_type(error: str | None) -> str:
+    error = error or ""
+    if "integration_state.npy shape" in error:
+        return "integration_state_shape"
+    if "No overlapping export window" in error:
+        return "no_overlap_window"
+    if "requires integration_state.npy" in error:
+        return "missing_integration_state"
+    return "other"
+
+
+def _task_from_failure_record(record: dict[str, Any]) -> str:
+    prefix = str(record.get("episode_prefix") or "")
+    parts = PurePosixPath(prefix).parts
+    for idx, part in enumerate(parts):
+        if _EPISODE_NAME_RE.match(part) and idx > 0:
+            return parts[idx - 1]
+    return "unknown"
+
+
+def _build_failure_breakdown(
+    failures_by_shard: dict[int, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    by_task: dict[str, dict[str, Any]] = {}
+    by_error_type = Counter()
+    record_count = 0
+    shard_count = 0
+    for shard_index, records in failures_by_shard.items():
+        shard_records = [record for record in records if "_error" not in record]
+        if shard_records:
+            shard_count += 1
+        for record in shard_records:
+            record_count += 1
+            task = _task_from_failure_record(record)
+            error_type = _failure_error_type(record.get("error"))
+            by_error_type[error_type] += 1
+            row = by_task.setdefault(
+                task,
+                {
+                    "task": task,
+                    "total": 0,
+                    "integration_state_shape": 0,
+                    "no_overlap_window": 0,
+                    "missing_integration_state": 0,
+                    "other": 0,
+                    "shards": set(),
+                },
+            )
+            row["total"] += 1
+            row[error_type] += 1
+            row["shards"].add(shard_index)
+
+    rows = []
+    for row in by_task.values():
+        normalized = dict(row)
+        normalized["shard_count"] = len(row["shards"])
+        normalized.pop("shards", None)
+        rows.append(normalized)
+    rows.sort(key=lambda item: (-int(item["total"]), str(item["task"])))
+    return {
+        "record_count": record_count,
+        "shard_count": shard_count,
+        "by_task": rows,
+        "by_error_type": dict(by_error_type),
+    }
 
 
 def _run_pgrep(pattern: str) -> list[str]:
@@ -236,6 +402,9 @@ class ExportRunMonitor:
         self._last_good_staged_count: int | None = None
         self._last_good_far_count: int | None = None
         self._last_good_metadata: dict[str, Any] = {}
+        self._last_good_remote_statuses: dict[int, dict[str, Any]] = {}
+        self._last_good_collected_counts: dict[int, dict[str, Any]] = {}
+        self._last_good_failures: dict[int, list[dict[str, Any]]] = {}
 
     def _discover_totals(self) -> dict[str, Any]:
         sources = discover_episode_sources(
@@ -319,6 +488,55 @@ class ExportRunMonitor:
             metadata_stale = True
         elif "_error" not in metadata_entries:
             self._last_good_metadata = dict(metadata_entries)
+        remote_statuses, remote_status_error = _load_metadata_json_objects(
+            staging_metadata_uri,
+            _STATUS_RE,
+            aws_profile=self.config.staging_aws_profile,
+            aws_region=self.config.staging_region,
+        )
+        remote_statuses_stale = False
+        if remote_status_error and self._last_good_remote_statuses:
+            remote_statuses = self._last_good_remote_statuses
+            remote_statuses_stale = True
+        elif not remote_status_error:
+            self._last_good_remote_statuses = dict(remote_statuses)
+        collected_counts_payloads, collected_counts_error = _load_metadata_json_objects(
+            staging_metadata_uri,
+            _COLLECTED_SHARD_RE,
+            aws_profile=self.config.staging_aws_profile,
+            aws_region=self.config.staging_region,
+        )
+        collected_counts_stale = False
+        if collected_counts_error and self._last_good_collected_counts:
+            collected_counts_payloads = self._last_good_collected_counts
+            collected_counts_stale = True
+        elif not collected_counts_error:
+            self._last_good_collected_counts = dict(collected_counts_payloads)
+        collected_counts = {
+            shard_index: len(payload)
+            for shard_index, payload in collected_counts_payloads.items()
+            if "_error" not in payload
+        }
+        failure_payloads, failure_payloads_error = _load_metadata_json_lists(
+            staging_metadata_uri,
+            _FAILURES_SHARD_RE,
+            aws_profile=self.config.staging_aws_profile,
+            aws_region=self.config.staging_region,
+        )
+        failure_payloads_stale = False
+        if failure_payloads_error and self._last_good_failures:
+            failure_payloads = self._last_good_failures
+            failure_payloads_stale = True
+        elif not failure_payloads_error:
+            self._last_good_failures = dict(failure_payloads)
+        failure_breakdown = _build_failure_breakdown(failure_payloads)
+        remote_shard_rows = self._build_remote_shard_rows(
+            remote_statuses,
+            collected_counts=collected_counts,
+        )
+        reported_completed_count = sum(row["completed_episodes"] for row in remote_shard_rows)
+        reported_failed_count = sum(row["failed_episodes"] for row in remote_shard_rows)
+        status_file_count = len(remote_statuses)
         active_exports = _build_active_episode_rows()
         export_parents = _ps_rows(r"xdof_sim\.dataset_export\.cli s3-export")
         finalize_rows = _ps_rows(r"xdof_sim\.dataset_export\.cli s3-finalize")
@@ -346,8 +564,21 @@ class ExportRunMonitor:
                     if remaining > 0:
                         eta_seconds = remaining / (delta_eps / delta_t)
 
+        effective_count = staged_count
+        if effective_count is None:
+            effective_count = reported_completed_count
+        else:
+            effective_count = max(effective_count, reported_completed_count)
+
+        remote_active = [
+            row for row in remote_shard_rows if row["phase"] not in ("complete", "complete_with_failures", "failed", "missing")
+        ]
+        remote_finished_count = len(
+            [row for row in remote_shard_rows if row["phase"] in ("complete", "complete_with_failures")]
+        )
+
         phase = "idle"
-        if active_exports:
+        if active_exports or remote_active:
             phase = "exporting"
         elif finalize_rows:
             phase = "finalizing"
@@ -357,10 +588,12 @@ class ExportRunMonitor:
             phase = "complete"
         elif metadata_entries.get("collected.json"):
             phase = "waiting_for_far_sync"
+        elif remote_finished_count == self.config.num_shards and self.config.num_shards > 0:
+            phase = "shards_complete"
 
         progress_fraction = 0.0
-        if staged_count is not None and self._source_totals["total_episodes"]:
-            progress_fraction = staged_count / self._source_totals["total_episodes"]
+        if effective_count is not None and self._source_totals["total_episodes"]:
+            progress_fraction = effective_count / self._source_totals["total_episodes"]
         far_fraction = 0.0
         if far_count is not None and self._source_totals["total_episodes"]:
             far_fraction = far_count / self._source_totals["total_episodes"]
@@ -371,12 +604,15 @@ class ExportRunMonitor:
             "overall": {
                 "total_episodes": self._source_totals["total_episodes"],
                 "staged_count": staged_count,
+                "effective_count": effective_count,
+                "reported_completed_count": reported_completed_count,
+                "reported_failed_count": reported_failed_count,
                 "staging_count_error": staging_count_error,
                 "staging_count_stale": staged_count_stale,
                 "far_count": far_count,
                 "far_count_error": far_count_error,
                 "far_count_stale": far_count_stale,
-                "remaining_count": None if staged_count is None else self._source_totals["total_episodes"] - staged_count,
+                "remaining_count": None if effective_count is None else self._source_totals["total_episodes"] - effective_count,
                 "progress_fraction": progress_fraction,
                 "far_fraction": far_fraction,
                 "speed_eps_per_min": speed_eps_per_min,
@@ -388,7 +624,16 @@ class ExportRunMonitor:
                 "assigned_totals": self._source_totals["shard_totals"],
                 "active_exports": active_exports,
                 "parent_processes": export_parents,
+                "remote_statuses": remote_shard_rows,
+                "remote_status_error": remote_status_error,
+                "remote_statuses_stale": remote_statuses_stale,
+                "status_file_count": status_file_count,
+                "collected_counts_error": collected_counts_error,
+                "collected_counts_stale": collected_counts_stale,
+                "failure_records_error": failure_payloads_error,
+                "failure_records_stale": failure_payloads_stale,
             },
+            "failures": failure_breakdown,
             "metadata": metadata_entries,
             "metadata_stale": metadata_stale,
             "watchers": {
@@ -407,6 +652,51 @@ class ExportRunMonitor:
                 "poll_interval_s": self.config.poll_interval_s,
             },
         }
+
+    def _build_remote_shard_rows(
+        self,
+        statuses: dict[int, dict[str, Any]],
+        *,
+        collected_counts: dict[int, int],
+    ) -> list[dict[str, Any]]:
+        now = datetime.now(timezone.utc)
+        rows: list[dict[str, Any]] = []
+        for shard_index, assigned_total in enumerate(self._source_totals["shard_totals"]):
+            status = statuses.get(shard_index, {})
+            completed = int(status.get("completed_episodes") or 0)
+            completed = max(completed, collected_counts.get(shard_index, 0))
+            failed = int(status.get("failed_episodes") or 0)
+            updated_at = status.get("updated_at")
+            updated_dt = _parse_iso_datetime(updated_at)
+            if updated_dt is not None and updated_dt.tzinfo is None:
+                updated_dt = updated_dt.replace(tzinfo=timezone.utc)
+            stale_seconds = None
+            if updated_dt is not None:
+                stale_seconds = max(0.0, (now - updated_dt).total_seconds())
+            phase = status.get("phase") or ("complete" if completed >= assigned_total and assigned_total else "missing")
+            progress_fraction = completed / assigned_total if assigned_total else 1.0
+            rows.append(
+                {
+                    "shard_index": shard_index,
+                    "shard_tag": status.get("shard_tag") or f"{shard_index:02d}",
+                    "phase": phase,
+                    "assigned_episodes": assigned_total,
+                    "attempted_episodes": int(status.get("attempted_episodes") or 0),
+                    "completed_episodes": completed,
+                    "failed_episodes": failed,
+                    "skipped_existing": int(status.get("skipped_existing") or 0),
+                    "current_episode": status.get("current_episode"),
+                    "last_completed_episode": status.get("last_completed_episode"),
+                    "last_error": status.get("last_error") or status.get("_error"),
+                    "hostname": status.get("hostname") or status.get("pod_name"),
+                    "gpu_id": status.get("gpu_id"),
+                    "updated_at": updated_at,
+                    "stale_seconds": stale_seconds,
+                    "stale": stale_seconds is not None and stale_seconds > max(60.0, self.config.poll_interval_s * 6.0),
+                    "progress_fraction": progress_fraction,
+                }
+            )
+        return rows
 
 
 _HTML = r"""<!doctype html>
@@ -731,13 +1021,13 @@ _HTML = r"""<!doctype html>
       <div class="hero-card">
         <h1>Dataset Export Monitor</h1>
         <div class="sub">
-          Live view of staged export progress, FAR handoff, active shard workers, and the current throughput for the running sim dataset job.
+          Live view of multi-node shard progress, active L40S workers, shard metadata, and the current throughput for the running sim dataset job.
         </div>
         <div class="phase"><span class="phase-dot"></span><span id="phase">Initializing…</span></div>
       </div>
       <div class="kpi-grid">
         <div class="kpi">
-          <div class="kpi-label">Staged Episodes</div>
+          <div class="kpi-label">Exported Episodes</div>
           <div class="kpi-value" id="stagedCount">-</div>
           <div class="kpi-sub" id="stagedSub">waiting for data</div>
         </div>
@@ -761,6 +1051,7 @@ _HTML = r"""<!doctype html>
 
     <div class="tabs">
       <button class="tab-btn active" data-tab="overview">Overview</button>
+      <button class="tab-btn" data-tab="shards">Shards</button>
       <button class="tab-btn" data-tab="debug">Debug</button>
     </div>
 
@@ -771,7 +1062,7 @@ _HTML = r"""<!doctype html>
           <div class="progress-stack">
             <div>
               <div class="bar-head">
-                <div class="bar-title">Stage 1: Export To Staging</div>
+                <div class="bar-title">Exported Episodes</div>
                 <div class="bar-meta" id="stagingMeta">-</div>
               </div>
               <div class="bar-shell"><div class="bar-fill" id="stagingBar"></div></div>
@@ -795,6 +1086,27 @@ _HTML = r"""<!doctype html>
       </div>
     </section>
 
+    <section class="tab" id="tab-shards">
+      <div class="card">
+        <h2>Shard Progress</h2>
+        <table class="table" id="shardTable">
+          <thead>
+            <tr>
+              <th>Shard</th>
+              <th>Phase</th>
+              <th>Progress</th>
+              <th>Failed</th>
+              <th>Current Episode</th>
+              <th>Node</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <div class="note" id="shardStatusNote">Waiting for shard status files…</div>
+      </div>
+    </section>
+
     <section class="tab" id="tab-debug">
       <div class="section-grid">
         <div class="card">
@@ -804,6 +1116,25 @@ _HTML = r"""<!doctype html>
             <tbody></tbody>
           </table>
         </div>
+        <div class="card">
+          <h2>Failures By Task</h2>
+          <table class="table" id="failureTaskTable">
+            <thead>
+              <tr>
+                <th>Task</th>
+                <th>Total</th>
+                <th>State Shape</th>
+                <th>No Window</th>
+                <th>Missing State</th>
+                <th>Other</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+          <div class="note" id="failureBreakdownNote">Waiting for failure records…</div>
+        </div>
+      </div>
+      <div class="section-grid" style="margin-top:18px;">
         <div class="card">
           <h2>Metadata Checkpoints</h2>
           <table class="table" id="metadataTable">
@@ -869,12 +1200,38 @@ _HTML = r"""<!doctype html>
       return rate.toFixed(rate >= 10 ? 1 : 2);
     }
 
-    function renderActiveExports(active, watchers) {
+    function fmtAge(seconds) {
+      if (seconds == null || !Number.isFinite(seconds)) return '-';
+      seconds = Math.max(0, Math.round(seconds));
+      if (seconds < 60) return `${seconds}s ago`;
+      if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+      return `${Math.floor(seconds / 3600)}h ${String(Math.floor((seconds % 3600) / 60)).padStart(2, '0')}m ago`;
+    }
+
+    function renderActiveExports(active, watchers, remoteShards) {
       const container = document.getElementById('activeExports');
       container.innerHTML = '';
-      if (!active.length && !watchers.finalize.length && !watchers.sync.length) {
+      const remoteActive = (remoteShards || []).filter(row => !['complete', 'complete_with_failures', 'failed', 'missing'].includes(row.phase));
+      if (!remoteActive.length && !active.length && !watchers.finalize.length && !watchers.sync.length) {
         container.innerHTML = '<div class="muted">No active shard workers detected.</div>';
         return;
+      }
+      for (const row of remoteActive.slice(0, 12)) {
+        const el = document.createElement('div');
+        el.className = 'shard-card';
+        el.innerHTML = `
+          <div class="shard-head">
+            <strong>Shard ${row.shard_index}</strong>
+            <span class="chip">${row.phase.replaceAll('_', ' ')}</span>
+          </div>
+          <div class="episode">${row.current_episode ?? row.last_completed_episode ?? 'waiting for episode'}</div>
+          <div class="muted" style="margin-top:6px;">${row.hostname ?? 'unknown node'} · ${fmtAge(row.stale_seconds)}</div>
+          <div class="metric-row">
+            <div class="mini"><div class="label">Done</div><div class="value">${fmtInt(row.completed_episodes)} / ${fmtInt(row.assigned_episodes)}</div></div>
+            <div class="mini"><div class="label">Failed</div><div class="value">${fmtInt(row.failed_episodes)}</div></div>
+          </div>
+        `;
+        container.appendChild(el);
       }
       for (const row of active) {
         const el = document.createElement('div');
@@ -921,6 +1278,33 @@ _HTML = r"""<!doctype html>
       }
     }
 
+    function renderShardTable(status) {
+      const tbody = document.querySelector('#shardTable tbody');
+      tbody.innerHTML = '';
+      const rows = status.shards.remote_statuses || [];
+      for (const row of rows) {
+        const tr = document.createElement('tr');
+        const stale = row.stale ? ' · stale' : '';
+        const current = row.current_episode || row.last_completed_episode || '';
+        const error = row.last_error ? `<div style="color:#b13c32; margin-top:4px;">${row.last_error}</div>` : '';
+        tr.innerHTML = `
+          <td class="mono">${row.shard_index}</td>
+          <td>${row.phase.replaceAll('_', ' ')}${stale}</td>
+          <td>${fmtInt(row.completed_episodes)} / ${fmtInt(row.assigned_episodes)} <span class="muted">(${fmtPct(row.progress_fraction)})</span></td>
+          <td>${fmtInt(row.failed_episodes)}</td>
+          <td class="mono">${current}${error}</td>
+          <td class="mono">${row.hostname ?? '-'}</td>
+          <td>${fmtAge(row.stale_seconds)}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+      const note = document.getElementById('shardStatusNote');
+      const statusCount = status.shards.status_file_count || 0;
+      const stale = status.shards.remote_statuses_stale ? ' · using cached shard status' : '';
+      const error = status.shards.remote_status_error ? ` · ${status.shards.remote_status_error}` : '';
+      note.textContent = `${fmtInt(statusCount)} status files found for ${fmtInt(status.shards.configured_total)} configured shards${stale}${error}`;
+    }
+
     function renderTables(status) {
       const taskTbody = document.querySelector('#taskTable tbody');
       taskTbody.innerHTML = '';
@@ -929,6 +1313,32 @@ _HTML = r"""<!doctype html>
         tr.innerHTML = `<td class="mono">${task}</td><td>${fmtInt(total)}</td>`;
         taskTbody.appendChild(tr);
       }
+
+      const failureTbody = document.querySelector('#failureTaskTable tbody');
+      failureTbody.innerHTML = '';
+      const failures = status.failures || {};
+      const failureRows = failures.by_task || [];
+      for (const row of failureRows) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td class="mono">${row.task}</td>
+          <td>${fmtInt(row.total)}</td>
+          <td>${fmtInt(row.integration_state_shape)}</td>
+          <td>${fmtInt(row.no_overlap_window)}</td>
+          <td>${fmtInt(row.missing_integration_state)}</td>
+          <td>${fmtInt(row.other)}</td>
+        `;
+        failureTbody.appendChild(tr);
+      }
+      if (!failureRows.length) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td colspan="6" class="muted">No failure records uploaded yet.</td>';
+        failureTbody.appendChild(tr);
+      }
+      const failureNote = document.getElementById('failureBreakdownNote');
+      const failureError = status.shards.failure_records_error ? ` · ${status.shards.failure_records_error}` : '';
+      const failureStale = status.shards.failure_records_stale ? ' · using cached failure records' : '';
+      failureNote.textContent = `${fmtInt(failures.record_count || 0)} failure records from ${fmtInt(failures.shard_count || 0)} shard files${failureStale}${failureError}`;
 
       const metaTbody = document.querySelector('#metadataTable tbody');
       metaTbody.innerHTML = '';
@@ -948,15 +1358,19 @@ _HTML = r"""<!doctype html>
       document.getElementById('processDump').textContent = JSON.stringify({
         active_exports: status.shards.active_exports,
         shard_parents: status.shards.parent_processes,
+        remote_statuses: status.shards.remote_statuses,
+        failures: status.failures,
         watchers: status.watchers,
       }, null, 2);
       document.getElementById('configDump').textContent = JSON.stringify(status.config, null, 2);
+      renderShardTable(status);
     }
 
     function render(status) {
       const overall = status.overall;
       document.getElementById('phase').textContent = status.phase.replaceAll('_', ' ');
-      document.getElementById('stagedCount').textContent = fmtInt(overall.staged_count);
+      const displayedCount = overall.effective_count ?? overall.staged_count;
+      document.getElementById('stagedCount').textContent = fmtInt(displayedCount);
       document.getElementById('stagedSub').textContent = `${fmtPct(overall.progress_fraction)} of ${fmtInt(overall.total_episodes)} total${overall.staging_count_stale ? ' · cached' : ''}`;
       document.getElementById('remainingCount').textContent = fmtInt(overall.remaining_count);
       document.getElementById('speed').textContent = fmtRate(overall.speed_eps_per_min);
@@ -965,11 +1379,11 @@ _HTML = r"""<!doctype html>
 
       const stagingPct = Math.max(0, Math.min(1, overall.progress_fraction || 0));
       document.getElementById('stagingBar').style.width = `${stagingPct * 100}%`;
-      document.getElementById('stagingMeta').textContent = `${fmtInt(overall.staged_count)} / ${fmtInt(overall.total_episodes)}`;
+      document.getElementById('stagingMeta').textContent = `${fmtInt(displayedCount)} / ${fmtInt(overall.total_episodes)}`;
       document.getElementById('stagingCaption').textContent =
         overall.staging_count_error
-          ? `Using cached staged count while staging auth is unavailable: ${overall.staging_count_error}`
-          : `${fmtInt(overall.remaining_count)} episodes still need to land in staging.`;
+          ? `Using cached export count while S3 status is unavailable: ${overall.staging_count_error}`
+          : `${fmtInt(overall.remaining_count)} episodes still need to export. ${fmtInt(overall.reported_failed_count)} reported failures.`;
 
       const farPct = Math.max(0, Math.min(1, overall.far_fraction || 0));
       document.getElementById('farBar').style.width = `${farPct * 100}%`;
@@ -981,7 +1395,7 @@ _HTML = r"""<!doctype html>
         `${fmtInt(Math.max(0, overall.total_episodes - overall.far_count))} episodes still need to copy to FAR.`;
 
       document.getElementById('updatedAt').textContent = `Last update: ${status.generated_at}`;
-      renderActiveExports(status.shards.active_exports, status.watchers);
+      renderActiveExports(status.shards.active_exports, status.watchers, status.shards.remote_statuses);
       renderTables(status);
     }
 
@@ -1061,7 +1475,8 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8091)
     parser.add_argument("--s3-input-prefix", required=True)
-    parser.add_argument("--staging-root", required=True)
+    parser.add_argument("--s3-output-root", default=None)
+    parser.add_argument("--staging-root", default=None)
     parser.add_argument("--far-root", default=None)
     parser.add_argument("--source-aws-profile", default=None)
     parser.add_argument("--staging-aws-profile", default=None)
@@ -1072,13 +1487,16 @@ def main() -> None:
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--poll-interval", type=float, default=10.0)
     args = parser.parse_args()
+    monitor_root = args.s3_output_root or args.staging_root
+    if not monitor_root:
+        parser.error("requires --s3-output-root or --staging-root")
 
     serve_monitor(
         host=args.host,
         port=args.port,
         config=MonitorConfig(
             s3_input_prefix=args.s3_input_prefix,
-            staging_root=args.staging_root,
+            staging_root=monitor_root,
             far_root=args.far_root,
             source_aws_profile=args.source_aws_profile,
             staging_aws_profile=args.staging_aws_profile,

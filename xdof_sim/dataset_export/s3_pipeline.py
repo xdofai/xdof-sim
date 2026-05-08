@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import shutil
+import socket
 from typing import Any
 import traceback
 
@@ -50,6 +53,79 @@ def _remote_metadata_uri(s3_output_root: str, filename: str) -> str:
 
 def _remote_episode_data_uri(s3_output_root: str, episode_id: str) -> str:
     return parse_s3_uri(s3_output_root).child("data", episode_id).uri
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class _ShardStatusWriter:
+    """Best-effort S3 heartbeat for one export shard."""
+
+    def __init__(
+        self,
+        *,
+        s3_output_root: str,
+        local_dir: Path,
+        shard_index: int,
+        num_shards: int,
+        config: ExportConfig,
+        source_prefix: str,
+        output_aws_profile: str | None,
+        output_region: str | None,
+    ) -> None:
+        self.s3_output_root = s3_output_root
+        self.local_path = Path(local_dir) / f"status_shard_{_shard_tag(shard_index, num_shards)}.json"
+        self.remote_uri = _remote_metadata_uri(s3_output_root, self.local_path.name)
+        self.output_aws_profile = output_aws_profile
+        self.output_region = output_region
+        self.payload: dict[str, Any] = {
+            "schema_version": 1,
+            "shard_index": shard_index,
+            "num_shards": num_shards,
+            "shard_tag": _shard_tag(shard_index, num_shards),
+            "source_prefix": source_prefix,
+            "output_root": s3_output_root,
+            "batch_name": config.batch_name,
+            "render_backend": config.render_backend,
+            "image_width": config.image_width,
+            "image_height": config.image_height,
+            "fps": config.fps,
+            "sim_batch_size": config.sim_batch_size,
+            "gpu_id": config.gpu_id,
+            "hostname": socket.gethostname(),
+            "pod_name": os.environ.get("HOSTNAME"),
+            "skypilot_node_rank": os.environ.get("SKYPILOT_NODE_RANK"),
+            "skypilot_num_nodes": os.environ.get("SKYPILOT_NUM_NODES"),
+            "started_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+            "phase": "initializing",
+            "discovered_episodes": None,
+            "assigned_episodes": None,
+            "skipped_existing": 0,
+            "attempted_episodes": 0,
+            "completed_episodes": 0,
+            "failed_episodes": 0,
+            "current_episode": None,
+            "current_episode_prefix": None,
+            "last_completed_episode": None,
+            "last_error": None,
+        }
+
+    def update(self, **updates: Any) -> None:
+        self.payload.update(updates)
+        self.payload["updated_at"] = _utc_now_iso()
+        self.local_path.parent.mkdir(parents=True, exist_ok=True)
+        self.local_path.write_text(json.dumps(self.payload, indent=2, sort_keys=True) + "\n")
+        try:
+            copy_local_file_to_s3(
+                self.local_path,
+                self.remote_uri,
+                aws_profile=self.output_aws_profile,
+                aws_region=self.output_region,
+            )
+        except Exception as exc:  # pragma: no cover - status must not fail exports
+            print(f"[s3-export] Warning: failed to upload shard status: {exc}")
 
 
 def _load_remote_json_if_exists(
@@ -113,6 +189,21 @@ def export_s3_shard(
     metadata_root.mkdir(parents=True, exist_ok=True)
 
     shard_tag = _shard_tag(shard_index, num_shards)
+    status = _ShardStatusWriter(
+        s3_output_root=s3_output_root,
+        local_dir=metadata_root,
+        shard_index=shard_index,
+        num_shards=num_shards,
+        config=config,
+        source_prefix=s3_input_prefix,
+        output_aws_profile=output_aws_profile,
+        output_region=output_region,
+    )
+    status.update(
+        phase="resuming" if resume_existing else "starting",
+        discovered_episodes=len(discovered),
+        assigned_episodes=len(assigned),
+    )
     existing_collected: dict[str, dict] = {}
     existing_camera_profiles: dict[str, dict] = {}
     if resume_existing:
@@ -143,6 +234,13 @@ def export_s3_shard(
     collected: dict[str, dict] = dict(existing_collected)
     camera_profiles: dict[str, dict] = dict(existing_camera_profiles)
     failures: list[dict[str, str]] = []
+    status.update(
+        phase="running" if assigned_to_run else "complete",
+        skipped_existing=len(already_exported),
+        attempted_episodes=len(assigned_to_run),
+        completed_episodes=len(collected),
+        failed_episodes=0,
+    )
     if assigned_to_run:
         upload_data_root = dataset_root / "data"
 
@@ -185,6 +283,15 @@ def export_s3_shard(
                     {metadata["episode_id"]: metadata},
                     kind="episode metadata",
                 )
+                status.update(
+                    phase="running",
+                    completed_episodes=len(collected),
+                    failed_episodes=len(failures),
+                    last_completed_episode=metadata["episode_id"],
+                    current_episode=None,
+                    current_episode_prefix=None,
+                    last_error=None,
+                )
             except Exception as exc:
                 failures.append(
                     {
@@ -193,6 +300,14 @@ def export_s3_shard(
                         "error": str(exc),
                         "traceback": traceback.format_exc(),
                     }
+                )
+                status.update(
+                    phase="running",
+                    completed_episodes=len(collected),
+                    failed_episodes=len(failures),
+                    current_episode=None,
+                    current_episode_prefix=None,
+                    last_error=str(exc),
                 )
             finally:
                 cleanup_local_tree(exported_dir, stop_at=upload_data_root)
@@ -215,7 +330,17 @@ def export_s3_shard(
                     next_source = assigned_to_run[index + 1] if index + 1 < len(assigned_to_run) else None
                     pending_stage = submit_stage(executor, next_source)
 
+                    status.update(
+                        phase="staging",
+                        current_episode=source.episode_name,
+                        current_episode_prefix=source.episode_prefix,
+                    )
                     staged_dir = stage_future.result()
+                    status.update(
+                        phase="exporting",
+                        current_episode=source.episode_name,
+                        current_episode_prefix=source.episode_prefix,
+                    )
                     artifacts, metadata = export_episode_with_backend_lifecycle(
                         staged_dir,
                         dataset_root,
@@ -237,6 +362,11 @@ def export_s3_shard(
                             aws_region=output_region,
                         ),
                     )
+                    status.update(
+                        phase="uploading",
+                        current_episode=metadata["episode_id"],
+                        current_episode_prefix=source.episode_prefix,
+                    )
                     exported_dir = None
                 except Exception as exc:
                     failures.append(
@@ -247,6 +377,14 @@ def export_s3_shard(
                             "traceback": traceback.format_exc(),
                         }
                     )
+                    status.update(
+                        phase="running",
+                        completed_episodes=len(collected),
+                        failed_episodes=len(failures),
+                        current_episode=None,
+                        current_episode_prefix=None,
+                        last_error=str(exc),
+                    )
                 finally:
                     if exported_dir is not None:
                         cleanup_local_tree(exported_dir, stop_at=upload_data_root)
@@ -255,6 +393,13 @@ def export_s3_shard(
 
             finalize_upload()
 
+    status.update(
+        phase="writing_metadata",
+        completed_episodes=len(collected),
+        failed_episodes=len(failures),
+        current_episode=None,
+        current_episode_prefix=None,
+    )
     collected_path = write_json(metadata_root / f"collected_shard_{shard_tag}.json", collected)
     copy_local_file_to_s3(
         collected_path,
@@ -289,6 +434,14 @@ def export_s3_shard(
             aws_region=output_region,
         )
 
+    status.update(
+        phase="complete" if not failures else "complete_with_failures",
+        completed_episodes=len(collected),
+        failed_episodes=len(failures),
+        current_episode=None,
+        current_episode_prefix=None,
+        finished_at=_utc_now_iso(),
+    )
     return {
         "discovered_episodes": len(discovered),
         "assigned_episodes": len(assigned),

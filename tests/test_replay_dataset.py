@@ -728,6 +728,7 @@ class DatasetEpisodeContextTests(unittest.TestCase):
 
         self.assertIs(returned, env)
         self.assertEqual(make_env_mock.call_args.kwargs["scene_xml_string"], "<mujoco/>")
+        self.assertIs(make_env_mock.call_args.kwargs["enable_task_randomizer"], False)
         env.reset.assert_called_once_with(randomize=False)
         apply_mock.assert_not_called()
 
@@ -756,7 +757,9 @@ class DatasetEpisodeContextTests(unittest.TestCase):
         self.assertIs(returned, env)
         self.assertEqual(make_env_mock.call_count, 2)
         self.assertEqual(make_env_mock.call_args_list[0].kwargs["scene_xml_string"], "<mujoco/>")
+        self.assertIs(make_env_mock.call_args_list[0].kwargs["enable_task_randomizer"], False)
         self.assertIsNone(make_env_mock.call_args_list[1].kwargs["scene_xml_string"])
+        self.assertIs(make_env_mock.call_args_list[1].kwargs["enable_task_randomizer"], True)
         env.reset.assert_called_once_with(randomize=False)
         apply_mock.assert_called_once_with(env.model, env.data, rand_state)
 
