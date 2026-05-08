@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from itertools import product
 from pathlib import Path
 import unittest
 
@@ -11,10 +12,16 @@ from xdof_sim.randomization import (
     DishRackRandomizer,
     SweepRandomizer,
     _build_dishrack_scene_xml,
+    _build_mug_scene_xml,
     _dishrack_geom_world_bounds,
     _dishrack_plate_body_name,
     _dishrack_plate_joint_name,
     _dishrack_variant_names,
+    _MUG_FLIP_SPAWN_CLEARANCE_M,
+    _MUG_FLIP_TRAY_FLOOR_Z_OFFSET,
+    _MUG_FLIP_TRAY_INNER_HALF_XY,
+    _mug_plain_color_material_names,
+    _mug_variant_names,
 )
 from xdof_sim.env import project_policy_state
 
@@ -28,6 +35,92 @@ def _body_in_subtree(model: mujoco.MjModel, body_id: int, root_body_id: int) -> 
         if parent == current:
             break
         current = parent
+    return False
+
+
+def _subtree_collision_bounds_in_body_frame(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    *,
+    root_body_id: int,
+    frame_body_id: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    frame_pos = np.asarray(data.xpos[frame_body_id], dtype=np.float64)
+    frame_rot = np.asarray(data.xmat[frame_body_id], dtype=np.float64).reshape(3, 3)
+    points: list[np.ndarray] = []
+
+    for geom_id in range(model.ngeom):
+        if not _body_in_subtree(model, int(model.geom_bodyid[geom_id]), root_body_id):
+            continue
+        if not (int(model.geom_contype[geom_id]) or int(model.geom_conaffinity[geom_id])):
+            continue
+
+        geom_type = int(model.geom_type[geom_id])
+        if geom_type == mujoco.mjtGeom.mjGEOM_MESH:
+            mesh_id = int(model.geom_dataid[geom_id])
+            start = int(model.mesh_vertadr[mesh_id])
+            count = int(model.mesh_vertnum[mesh_id])
+            geom_rot = np.asarray(data.geom_xmat[geom_id], dtype=np.float64).reshape(3, 3)
+            geom_pos = np.asarray(data.geom_xpos[geom_id], dtype=np.float64)
+            local_points = np.asarray(model.mesh_vert[start : start + count], dtype=np.float64)
+            world_points = local_points @ geom_rot.T + geom_pos
+        else:
+            lower, upper = _dishrack_geom_world_bounds(model, data, geom_id)
+            world_points = np.asarray(
+                list(product(*zip(lower.tolist(), upper.tolist()))),
+                dtype=np.float64,
+            )
+
+        points.append((world_points - frame_pos) @ frame_rot)
+
+    if not points:
+        raise AssertionError("Expected at least one collision geom in body subtree")
+
+    stacked = np.vstack(points)
+    return stacked.min(axis=0), stacked.max(axis=0)
+
+
+def _has_mug_mug_contact(model: mujoco.MjModel, data: mujoco.MjData) -> bool:
+    mug_roots: set[int] = set()
+    for index in range(1, 5):
+        body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"mug_{index}")
+        if body_id >= 0:
+            mug_roots.add(int(model.body_rootid[body_id]))
+
+    for contact_index in range(data.ncon):
+        contact = data.contact[contact_index]
+        root_1 = int(model.body_rootid[int(model.geom_bodyid[contact.geom1])])
+        root_2 = int(model.body_rootid[int(model.geom_bodyid[contact.geom2])])
+        if root_1 != root_2 and root_1 in mug_roots and root_2 in mug_roots:
+            return True
+    return False
+
+
+def _has_mug_tree_contact(model: mujoco.MjModel, data: mujoco.MjData) -> bool:
+    tree_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "mug_tree")
+    if tree_body_id < 0:
+        return False
+
+    mug_roots: set[int] = set()
+    for index in range(1, 4):
+        body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"mug_{index}")
+        if body_id >= 0:
+            mug_roots.add(int(model.body_rootid[body_id]))
+
+    for contact_index in range(data.ncon):
+        contact = data.contact[contact_index]
+        body_1 = int(model.geom_bodyid[contact.geom1])
+        body_2 = int(model.geom_bodyid[contact.geom2])
+        root_1 = int(model.body_rootid[body_1])
+        root_2 = int(model.body_rootid[body_2])
+        if (
+            root_1 in mug_roots
+            and _body_in_subtree(model, body_2, tree_body_id)
+        ) or (
+            root_2 in mug_roots
+            and _body_in_subtree(model, body_1, tree_body_id)
+        ):
+            return True
     return False
 
 
@@ -430,6 +523,321 @@ class DishRackVariantRandomizationTests(unittest.TestCase):
                         mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_JOINT, _dishrack_plate_joint_name(index)),
                         0,
                     )
+        finally:
+            env.close()
+
+
+class MugVariantRandomizationTests(unittest.TestCase):
+    def test_mug_variant_names_include_copied_plain_base_first(self) -> None:
+        for task_name in ("mug_flip", "mug_tree"):
+            variants = _mug_variant_names(task_name)
+            self.assertEqual(variants[0], "mug_0")
+            self.assertGreaterEqual(len(variants), 2)
+            self.assertIn("mug_1", variants)
+            self.assertTrue(_mug_plain_color_material_names(task_name, 0))
+
+    def test_build_mug_scene_xml_loads_selected_variants(self) -> None:
+        for task_name in ("mug_flip", "mug_tree"):
+            for variant_name in ("mug_0", "mug_1"):
+                xml = _build_mug_scene_xml(
+                    task_name=task_name,
+                    mug_variant=variant_name,
+                    scale_states={},
+                    base_scene_xml=None,
+                    base_scene_dir=None,
+                )
+                self.assertIn(f"task_{task_name}/mug/{variant_name}", xml)
+                model = mujoco.MjModel.from_xml_string(xml)
+                self.assertGreaterEqual(
+                    mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "mug_1"),
+                    0,
+                )
+                self.assertGreaterEqual(
+                    mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "mug_2"),
+                    0,
+                )
+
+    def test_build_mug_flip_scene_xml_supports_variable_mug_count(self) -> None:
+        for mug_count in range(1, 5):
+            mug_variants = [f"mug_{index}" for index in range(mug_count)]
+            xml = _build_mug_scene_xml(
+                task_name="mug_flip",
+                mug_variant="mug_0",
+                mug_variants=mug_variants,
+                scale_states={},
+                base_scene_xml=None,
+                base_scene_dir=None,
+            )
+            model = mujoco.MjModel.from_xml_string(xml)
+
+            for index in range(1, mug_count + 1):
+                self.assertGreaterEqual(
+                    mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"mug_{index}"),
+                    0,
+                )
+                self.assertGreaterEqual(
+                    mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"mug_{index}_jnt"),
+                    0,
+                )
+            for index in range(mug_count + 1, 5):
+                self.assertLess(
+                    mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"mug_{index}"),
+                    0,
+                )
+
+    def test_build_mug_tree_scene_xml_supports_variable_mug_count(self) -> None:
+        for mug_count in range(1, 4):
+            mug_variants = [f"mug_{index}" for index in range(mug_count)]
+            xml = _build_mug_scene_xml(
+                task_name="mug_tree",
+                mug_variant="mug_0",
+                mug_variants=mug_variants,
+                scale_states={},
+                base_scene_xml=None,
+                base_scene_dir=None,
+            )
+            model = mujoco.MjModel.from_xml_string(xml)
+
+            for index in range(1, mug_count + 1):
+                self.assertGreaterEqual(
+                    mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"mug_{index}"),
+                    0,
+                )
+                self.assertGreaterEqual(
+                    mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"mug_{index}_jnt"),
+                    0,
+                )
+            for index in range(mug_count + 1, 4):
+                self.assertLess(
+                    mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"mug_{index}"),
+                    0,
+                )
+
+    def test_make_env_randomizes_mug_flip_count_and_instance_variants(self) -> None:
+        env = xdof_sim.make_env(task="mug_flip", render_cameras=False)
+        try:
+            observed_counts: set[int] = set()
+            observed_independent_sample = False
+            for seed in range(12):
+                env.reset(seed=seed, randomize=True)
+                state = env._last_randomization
+                self.assertIsNotNone(state)
+                assert state is not None
+
+                mug_count = int(state.metadata["mug_count"])
+                mug_variants = list(state.metadata["mug_variants"])
+                observed_counts.add(mug_count)
+                observed_independent_sample = observed_independent_sample or len(set(mug_variants)) > 1
+
+                self.assertGreaterEqual(mug_count, 1)
+                self.assertLessEqual(mug_count, 4)
+                self.assertEqual(len(mug_variants), mug_count)
+                self.assertEqual(
+                    {name for name in state.object_states if name.startswith("mug_")},
+                    {f"mug_{index}_jnt" for index in range(1, mug_count + 1)},
+                )
+                self.assertIn("tray", state.object_states)
+
+                for index in range(1, mug_count + 1):
+                    self.assertGreaterEqual(
+                        mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_BODY, f"mug_{index}"),
+                        0,
+                    )
+                for index in range(mug_count + 1, 5):
+                    self.assertLess(
+                        mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_BODY, f"mug_{index}"),
+                        0,
+                    )
+
+            self.assertGreaterEqual(len(observed_counts), 2)
+            self.assertTrue(observed_independent_sample)
+        finally:
+            env.close()
+
+    def test_make_env_randomizes_mug_tree_count_and_instance_variants(self) -> None:
+        env = xdof_sim.make_env(task="mug_tree", render_cameras=False)
+        try:
+            observed_counts: set[int] = set()
+            observed_independent_sample = False
+            for seed in range(12):
+                env.reset(seed=seed, randomize=True)
+                state = env._last_randomization
+                self.assertIsNotNone(state)
+                assert state is not None
+
+                mug_count = int(state.metadata["mug_count"])
+                mug_variants = list(state.metadata["mug_variants"])
+                observed_counts.add(mug_count)
+                observed_independent_sample = observed_independent_sample or len(set(mug_variants)) > 1
+
+                self.assertGreaterEqual(mug_count, 1)
+                self.assertLessEqual(mug_count, 3)
+                self.assertEqual(len(mug_variants), mug_count)
+                self.assertEqual(
+                    {name for name in state.object_states if name.startswith("mug_")},
+                    {"mug_tree", *{f"mug_{index}_jnt" for index in range(1, mug_count + 1)}},
+                )
+                self.assertFalse(_has_mug_mug_contact(env.model, env.data))
+                self.assertFalse(_has_mug_tree_contact(env.model, env.data))
+
+                for index in range(1, mug_count + 1):
+                    self.assertGreaterEqual(
+                        mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_BODY, f"mug_{index}"),
+                        0,
+                    )
+                for index in range(mug_count + 1, 4):
+                    self.assertLess(
+                        mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_BODY, f"mug_{index}"),
+                        0,
+                    )
+
+            self.assertGreaterEqual(len(observed_counts), 2)
+            self.assertTrue(observed_independent_sample)
+        finally:
+            env.close()
+
+    def test_make_env_randomizes_mug_task_scales_by_default(self) -> None:
+        cases = (
+            ("mug_flip", ["mug_0", "mug_0"]),
+            ("mug_tree", ["mug_0", "mug_0"]),
+        )
+        for task_name, mug_variants in cases:
+            env = xdof_sim.make_env(task=task_name, render_cameras=False)
+            try:
+                env.reset(
+                    seed=4,
+                    randomize=True,
+                    options={"randomization": {"mug_variants": mug_variants}},
+                )
+                state = env._last_randomization
+                self.assertIsNotNone(state)
+                assert state is not None
+
+                expected_keys = {f"mug_{index}_jnt" for index in range(1, len(mug_variants) + 1)}
+                self.assertEqual(set(state.scale_states), expected_keys)
+                self.assertTrue(any(abs(scale - 1.0) > 1e-6 for scale in state.scale_states.values()))
+                for scale in state.scale_states.values():
+                    self.assertGreaterEqual(scale, 0.90)
+                    self.assertLessEqual(scale, 1.10)
+            finally:
+                env.close()
+
+    def test_mug_flip_clamps_sampled_mug_bounds_inside_tray(self) -> None:
+        env = xdof_sim.make_env(task="mug_flip", render_cameras=False)
+        try:
+            env.reset(
+                seed=2,
+                randomize=True,
+                options={
+                    "randomization": {
+                        "mug_variants": ["mug_0", "mug_0", "mug_0", "mug_0"],
+                        "randomize_scales": False,
+                    }
+                },
+            )
+            state = env._last_randomization
+            self.assertIsNotNone(state)
+            assert state is not None
+            self.assertEqual(state.metadata["mug_count"], 4)
+
+            tray_body_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_BODY, "tray")
+            self.assertGreaterEqual(tray_body_id, 0)
+            for index in range(1, 5):
+                mug_body_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_BODY, f"mug_{index}")
+                self.assertGreaterEqual(mug_body_id, 0)
+                lower, upper = _subtree_collision_bounds_in_body_frame(
+                    env.model,
+                    env.data,
+                    root_body_id=mug_body_id,
+                    frame_body_id=tray_body_id,
+                )
+                self.assertGreaterEqual(lower[0], -_MUG_FLIP_TRAY_INNER_HALF_XY[0] - 1e-6)
+                self.assertLessEqual(upper[0], _MUG_FLIP_TRAY_INNER_HALF_XY[0] + 1e-6)
+                self.assertGreaterEqual(lower[1], -_MUG_FLIP_TRAY_INNER_HALF_XY[1] - 1e-6)
+                self.assertLessEqual(upper[1], _MUG_FLIP_TRAY_INNER_HALF_XY[1] + 1e-6)
+                self.assertGreaterEqual(
+                    lower[2],
+                    _MUG_FLIP_TRAY_FLOOR_Z_OFFSET + _MUG_FLIP_SPAWN_CLEARANCE_M - 1e-6,
+                )
+        finally:
+            env.close()
+
+    def test_mug_flip_reduces_large_mug_count_instead_of_accepting_overlap(self) -> None:
+        env = xdof_sim.make_env(task="mug_flip", render_cameras=False)
+        try:
+            env.reset(
+                seed=0,
+                randomize=True,
+                options={
+                    "randomization": {
+                        "mug_variants": ["mug_4", "mug_4", "mug_4", "mug_4"],
+                        "randomize_scales": False,
+                    }
+                },
+            )
+            state = env._last_randomization
+            self.assertIsNotNone(state)
+            assert state is not None
+            self.assertEqual(state.metadata["requested_mug_count"], 4)
+            self.assertTrue(state.metadata["mug_count_reduced"])
+            self.assertLess(state.metadata["mug_count"], 4)
+            self.assertEqual(
+                {name for name in state.object_states if name.startswith("mug_")},
+                {f"mug_{index}_jnt" for index in range(1, int(state.metadata["mug_count"]) + 1)},
+            )
+            self.assertFalse(_has_mug_mug_contact(env.model, env.data))
+        finally:
+            env.close()
+
+    def test_mug_flip_keeps_four_mugs_when_the_sampled_assets_fit(self) -> None:
+        env = xdof_sim.make_env(task="mug_flip", render_cameras=False)
+        try:
+            env.reset(
+                seed=0,
+                randomize=True,
+                options={
+                    "randomization": {
+                        "mug_variants": ["mug_0", "mug_0", "mug_0", "mug_0"],
+                        "randomize_scales": False,
+                    }
+                },
+            )
+            state = env._last_randomization
+            self.assertIsNotNone(state)
+            assert state is not None
+            self.assertEqual(state.metadata["mug_count"], 4)
+            self.assertNotIn("mug_count_reduced", state.metadata)
+            self.assertFalse(_has_mug_mug_contact(env.model, env.data))
+        finally:
+            env.close()
+
+    def test_mug_flip_randomizes_tray_color_and_replays_it(self) -> None:
+        env = xdof_sim.make_env(task="mug_flip", render_cameras=False)
+        try:
+            env.reset(
+                seed=0,
+                randomize=True,
+                options={
+                    "randomization": {
+                        "mug_variants": ["mug_0"],
+                        "randomize_scales": False,
+                    }
+                },
+            )
+            state = env._last_randomization
+            self.assertIsNotNone(state)
+            assert state is not None
+
+            tray_color = np.asarray(state.metadata["tray_color"], dtype=np.float64)
+            self.assertEqual(tray_color.shape, (4,))
+            mat_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_MATERIAL, "tray_blue")
+            self.assertGreaterEqual(mat_id, 0)
+            np.testing.assert_allclose(env.model.mat_rgba[mat_id], tray_color)
+
+            env.model.mat_rgba[mat_id] = np.asarray([1.0, 1.0, 1.0, 1.0], dtype=np.float64)
+            env._task_randomizer.apply(env.model, env.data, state)
+            mat_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_MATERIAL, "tray_blue")
+            np.testing.assert_allclose(env.model.mat_rgba[mat_id], tray_color)
         finally:
             env.close()
 

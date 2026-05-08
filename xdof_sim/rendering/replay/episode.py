@@ -154,10 +154,15 @@ def _local_scene_asset_root() -> Path:
     return Path(xdof_sim.__file__).resolve().parent / "models" / "assets"
 
 
+def _local_scene_models_root() -> Path:
+    return _local_scene_asset_root().parent
+
+
 def _normalize_recorded_scene_xml(xml: str) -> str:
     """Make recorded XML asset paths resolvable in the current checkout."""
     local_asset_root = _local_scene_asset_root().as_posix().rstrip("/") + "/"
     xml = _SCENE_ASSET_ROOT_RE.sub(local_asset_root, xml)
+    robocasa_root = (_local_scene_models_root() / "assets_robocasa").as_posix().rstrip("/") + "/"
 
     # Older delivered XMLs used human-readable dishrack asset directory names
     # from the collection checkout. This repo stores the same assets under the
@@ -173,6 +178,25 @@ def _normalize_recorded_scene_xml(xml: str) -> str:
                 f"task_dishrack/{kind}/{alias}/",
                 f"task_dishrack/{kind}/{canonical}/",
             )
+
+    # Some delivered episodes reference task-local dishrack variant ids that
+    # were not copied into this checkout's task_dishrack namespace. Resolve
+    # those ids directly against the local RoboCasa asset checkout.
+    legacy_asset_prefixes = {
+        "task_dishrack/dish_rack/dish_rack_10/": (
+            "objects_lightwheel/lightwheel/dish_rack/DishRack044/"
+        ),
+        "task_dishrack/plate/plate_19/": (
+            "objaverse/objaverse/plate/plate_19/"
+        ),
+        "task_dishrack/plate/plate_20/": (
+            "objaverse/objaverse/plate/plate_20/"
+        ),
+    }
+    for legacy_prefix, robocasa_prefix in legacy_asset_prefixes.items():
+        replacement_prefix = robocasa_root + robocasa_prefix
+        xml = xml.replace(local_asset_root + legacy_prefix, replacement_prefix)
+        xml = xml.replace(f'file="{legacy_prefix}', f'file="{replacement_prefix}')
     return xml
 
 

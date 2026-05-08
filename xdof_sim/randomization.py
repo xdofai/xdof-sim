@@ -152,6 +152,58 @@ class DishRackResetRequest:
 
 
 @dataclass(frozen=True)
+class MugResetRequest:
+    """Optional reset controls for mug asset randomization tasks."""
+
+    mug_variant: str | None = None
+    mug_variants: tuple[str, ...] | None = None
+    mug_count: int | None = None
+    cycle_mug: int = 0
+    randomize_variants: bool | None = None
+    randomize_scales: bool | None = None
+
+    @classmethod
+    def from_value(cls, value: Any | None) -> "MugResetRequest":
+        if value is None:
+            return cls()
+        if isinstance(value, cls):
+            return value
+        if not isinstance(value, dict):
+            raise TypeError(
+                "Mug reset request must be a dict or MugResetRequest, "
+                f"got {type(value).__name__}"
+            )
+
+        raw_variant = value.get("mug_variant")
+        raw_variants = value.get("mug_variants")
+        if raw_variants is None:
+            mug_variants = None
+        elif isinstance(raw_variants, str):
+            mug_variants = (raw_variants,)
+        else:
+            mug_variants = tuple(str(variant) for variant in raw_variants)
+
+        raw_count = value.get("mug_count")
+        raw_cycle = value.get("cycle_mug", 0)
+        randomize_variants = value.get("randomize_variants")
+        if randomize_variants is not None:
+            randomize_variants = bool(randomize_variants)
+
+        randomize_scales = value.get("randomize_scales")
+        if randomize_scales is not None:
+            randomize_scales = bool(randomize_scales)
+
+        return cls(
+            mug_variant=None if raw_variant is None else str(raw_variant),
+            mug_variants=mug_variants,
+            mug_count=None if raw_count is None else int(raw_count),
+            cycle_mug=0 if raw_cycle is None else int(raw_cycle),
+            randomize_variants=randomize_variants,
+            randomize_scales=randomize_scales,
+        )
+
+
+@dataclass(frozen=True)
 class SweepResetRequest:
     """Optional reset controls for the sweep randomizer."""
 
@@ -464,6 +516,7 @@ class SceneRandomizer:
         self._scene_variant = "hybrid"
         self._base_scene_xml_string: str | None = None
         self._base_scene_xml_dir: _Path | None = None
+        self._base_scene_xml_transformed = False
         self._scene_xml_transform_options = None
         self._current_scale_states: dict[str, float] = {}
 
@@ -479,9 +532,11 @@ class SceneRandomizer:
             self._base_scene_xml_dir = getattr(env, "_scene_xml", None)
             if self._base_scene_xml_dir is not None:
                 self._base_scene_xml_dir = _Path(self._base_scene_xml_dir).parent
+            self._base_scene_xml_transformed = self._scene_xml_transform_options is not None
         else:
             self._base_scene_xml_string = env._scene_xml.read_text()
             self._base_scene_xml_dir = _Path(env._scene_xml).parent
+            self._base_scene_xml_transformed = False
 
     def randomize(
         self,
@@ -789,6 +844,17 @@ _MUG_COLOR_PALETTE: list[tuple[float, float, float, float]] = [
     (0.047, 0.482, 0.863, 1.0),  # blue
     (0.960, 0.960, 0.960, 1.0),  # near-white
     (0.173, 0.173, 0.173, 1.0),  # near-black
+]
+
+_TRAY_COLOR_PALETTE: list[tuple[float, float, float, float]] = [
+    (0.000, 0.188, 1.000, 1.0),  # original blue
+    (0.050, 0.580, 0.420, 1.0),  # teal
+    (0.950, 0.420, 0.120, 1.0),  # orange
+    (0.620, 0.220, 0.780, 1.0),  # purple
+    (0.930, 0.820, 0.160, 1.0),  # yellow
+    (0.780, 0.120, 0.180, 1.0),  # red
+    (0.120, 0.140, 0.160, 1.0),  # charcoal
+    (0.880, 0.900, 0.880, 1.0),  # light gray
 ]
 
 # Probability of applying a random color (vs. keeping the XML default) each episode.
@@ -1352,7 +1418,7 @@ class DishRackRandomizer(SceneRandomizer):
                 base_scene_xml=base_scene_xml,
                 base_scene_dir=base_scene_dir,
             )
-            if self._scene_xml_transform_options is not None:
+            if self._scene_xml_transform_options is not None and not self._base_scene_xml_transformed:
                 from xdof_sim.scene_xml import transform_scene_xml
 
                 xml, _ = transform_scene_xml(xml, options=self._scene_xml_transform_options)
@@ -1391,13 +1457,415 @@ class BlocksRandomizer(SceneRandomizer):
     ]
 
 
-class MugTreeRandomizer(SceneRandomizer):
+class MugVariantRandomizer(SceneRandomizer):
+    """Base randomizer for mug tasks that swap mug mesh variants on reset."""
+
+    mug_task_name: str = ""
+    mug_body_names: tuple[str, ...] = ("mug_1", "mug_2")
+    min_mug_count = 2
+    max_mug_count = 2
+    randomize_mug_count = False
+    independent_mug_variants = False
+    mug_scale_factor = (0.90, 1.10)
+    _scene_model_cache_size = 16
+
+    def prepare_env(self) -> None:
+        self._current_mug_variants = [_MUG_DEFAULT_VARIANT] * self.max_mug_count
+        self._current_active_mug_count = self.max_mug_count
+        self._compiled_scene_model_cache: OrderedDict[tuple[Any, ...], mujoco.MjModel] = OrderedDict()
+        self._set_active_mug_count(self._current_active_mug_count)
+
+    def _get_size_perturbations(self) -> list[ScalePerturbRange]:
+        active_count = int(getattr(self, "_current_active_mug_count", self.max_mug_count))
+        return [
+            ScalePerturbRange(f"{body_name}_jnt", scale_factor=self.mug_scale_factor)
+            for body_name in self.mug_body_names[:active_count]
+        ]
+
+    def randomize(
+        self,
+        model: Any,
+        data: Any,
+        seed: int | None = None,
+        request: Any | None = None,
+    ) -> RandomizationState:
+        rng = np.random.default_rng(seed)
+        reset_request = MugResetRequest.from_value(request)
+        mug_variants = self._resolve_mug_variants(rng, reset_request)
+        self._set_active_mug_count(len(mug_variants))
+        should_randomize_scales = (
+            True if reset_request.randomize_scales is None else bool(reset_request.randomize_scales)
+        )
+        scale_states = self._sample_scale_states(rng) if should_randomize_scales else {}
+        self._current_scale_states = dict(scale_states)
+        self._reload_mug_variant_scene(mug_variants, scale_states)
+
+        if self._env_ref is not None:
+            model = self._env_ref.model
+            data = self._env_ref.data
+
+        metadata = {
+            "mug_variant": mug_variants[0],
+            "mug_variants": list(mug_variants),
+            "mug_count": len(mug_variants),
+        }
+
+        state = self._randomize_pose_with_rng(
+            model=model,
+            data=data,
+            seed=seed,
+            rng=rng,
+            scale_states=scale_states,
+            metadata=metadata,
+        )
+        mug_colors = self._sample_plain_mug_colors(rng, mug_variants)
+        if mug_colors:
+            state.metadata["mug_colors"] = mug_colors
+            self._apply_plain_mug_colors(model, mug_colors, mug_variants)
+        return state
+
+    def apply(self, model: Any, data: Any, state: RandomizationState) -> None:
+        mug_variants = self._mug_variants_from_state(state)
+        self._set_active_mug_count(len(mug_variants))
+        self._current_scale_states = dict(state.scale_states)
+        self._reload_mug_variant_scene(mug_variants, state.scale_states)
+        if self._env_ref is not None:
+            model = self._env_ref.model
+            data = self._env_ref.data
+        self._apply_states(model, data, state.object_states)
+        raw_colors = state.metadata.get("mug_colors")
+        if isinstance(raw_colors, dict):
+            self._apply_plain_mug_colors(model, raw_colors, mug_variants)
+        mujoco.mj_forward(model, data)
+
+    def _randomize_pose_with_rng(
+        self,
+        *,
+        model: Any,
+        data: Any,
+        seed: int | None,
+        rng: np.random.Generator,
+        scale_states: dict[str, float],
+        metadata: dict[str, Any],
+    ) -> RandomizationState:
+        if not self.perturbations:
+            return RandomizationState(
+                seed=seed or 0,
+                object_states={},
+                scale_states=scale_states,
+                metadata=dict(metadata),
+            )
+
+        self._before_sampling(model, data)
+        nominals = self._read_nominals(model, data)
+        last_states: dict[str, dict[str, list[float]]] = {}
+        for _attempt in range(self.max_tries):
+            states = self._sample_once(nominals, rng)
+            last_states = states
+            if not self._bounds_ok(states):
+                continue
+            if not self._pairwise_ok(states):
+                continue
+            self._apply_states(model, data, states)
+            mujoco.mj_forward(model, data)
+            if not self._contacts_ok(model, data):
+                continue
+            return RandomizationState(
+                seed=seed or 0,
+                object_states=states,
+                scale_states=scale_states,
+                metadata=dict(metadata),
+            )
+
+        logger.warning(
+            "%s: no collision-free placement found after %d tries — using last sample",
+            type(self).__name__,
+            self.max_tries,
+        )
+        self._apply_states(model, data, last_states)
+        mujoco.mj_forward(model, data)
+        return RandomizationState(
+            seed=seed or 0,
+            object_states=last_states,
+            scale_states=scale_states,
+            metadata=dict(metadata),
+        )
+
+    def _resolve_mug_variants(
+        self,
+        rng: np.random.Generator,
+        request: MugResetRequest,
+    ) -> list[str]:
+        if self._env_ref is None:
+            return [_MUG_DEFAULT_VARIANT] * self.max_mug_count
+
+        variants = _mug_variant_names(self.mug_task_name)
+        randomize_variants = request.randomize_variants
+        if randomize_variants is None:
+            randomize_variants = not any(
+                (
+                    request.mug_variant is not None,
+                    request.mug_variants is not None,
+                    request.cycle_mug != 0,
+                )
+            )
+
+        active_count = self._resolve_mug_count(
+            rng=rng,
+            request=request,
+            randomize_variants=randomize_variants,
+        )
+
+        if request.mug_variants is not None:
+            requested = [_mug_canonical_variant_name(variant) for variant in request.mug_variants]
+            invalid = [variant for variant in requested if variant not in variants]
+            if invalid:
+                raise ValueError(
+                    f"Unknown mug variants {invalid}. Available: {', '.join(variants)}"
+                )
+            if request.mug_count is not None and int(request.mug_count) != len(requested):
+                raise ValueError(
+                    f"mug_count={request.mug_count} does not match {len(requested)} mug_variants"
+                )
+            self._validate_mug_count(len(requested))
+            return requested
+
+        current_variants = list(
+            getattr(self, "_current_mug_variants", [_MUG_DEFAULT_VARIANT] * self.max_mug_count)
+        )
+        if not current_variants:
+            current_variants = [_MUG_DEFAULT_VARIANT] * self.max_mug_count
+        current_variant = current_variants[0]
+        if current_variant not in variants:
+            current_variant = variants[0]
+
+        if request.mug_variant is not None:
+            explicit_variant = _mug_canonical_variant_name(request.mug_variant)
+            if explicit_variant not in variants:
+                raise ValueError(
+                    f"Unknown mug variant {explicit_variant!r}. Available: {', '.join(variants)}"
+                )
+            return [explicit_variant] * active_count
+
+        if request.cycle_mug:
+            current_index = variants.index(current_variant)
+            return [variants[(current_index + request.cycle_mug) % len(variants)]] * active_count
+
+        if not randomize_variants:
+            if len(current_variants) >= active_count:
+                return current_variants[:active_count]
+            return current_variants + [current_variants[-1]] * (active_count - len(current_variants))
+
+        if self.independent_mug_variants:
+            return [_mug_sample_variant_name(self.mug_task_name, rng) for _ in range(active_count)]
+        return [_mug_sample_variant_name(self.mug_task_name, rng)] * active_count
+
+    def _resolve_mug_count(
+        self,
+        *,
+        rng: np.random.Generator,
+        request: MugResetRequest,
+        randomize_variants: bool,
+    ) -> int:
+        if request.mug_variants is not None:
+            return len(request.mug_variants)
+        if request.mug_count is not None:
+            count = int(request.mug_count)
+        elif not self.randomize_mug_count:
+            count = int(getattr(self, "_current_active_mug_count", self.max_mug_count))
+        elif request.mug_variant is not None or request.cycle_mug != 0 or not randomize_variants:
+            count = int(getattr(self, "_current_active_mug_count", self.max_mug_count))
+        else:
+            count = int(rng.integers(self.min_mug_count, self.max_mug_count + 1))
+        self._validate_mug_count(count)
+        return count
+
+    def _validate_mug_count(self, count: int) -> None:
+        if not self.min_mug_count <= count <= self.max_mug_count:
+            raise ValueError(
+                f"{type(self).__name__} mug_count must be in "
+                f"[{self.min_mug_count}, {self.max_mug_count}], got {count}"
+            )
+
+    def _set_active_mug_count(self, mug_count: int) -> None:
+        self._validate_mug_count(mug_count)
+        self._current_active_mug_count = mug_count
+
+    def _mug_variants_from_state(self, state: RandomizationState) -> list[str]:
+        raw_variants = state.metadata.get("mug_variants")
+        if isinstance(raw_variants, (list, tuple)) and raw_variants:
+            variants = [_mug_canonical_variant_name(str(variant)) for variant in raw_variants]
+        else:
+            inferred_count = int(
+                state.metadata.get(
+                    "mug_count",
+                    self._infer_mug_count_from_object_states(state.object_states),
+                )
+            )
+            variant = _mug_canonical_variant_name(
+                str(state.metadata.get("mug_variant", _MUG_DEFAULT_VARIANT))
+            )
+            variants = [variant] * inferred_count
+        self._validate_mug_count(len(variants))
+        return variants
+
+    def _infer_mug_count_from_object_states(
+        self,
+        object_states: dict[str, dict[str, list[float]]],
+    ) -> int:
+        count = 0
+        for body_name in self.mug_body_names:
+            joint_name = f"{body_name}_jnt"
+            if joint_name in object_states:
+                count += 1
+        return count or int(getattr(self, "_current_active_mug_count", self.max_mug_count))
+
+    def _scene_model_cache_key(
+        self,
+        mug_variants: list[str],
+        scale_states: dict[str, float],
+    ) -> tuple[Any, ...]:
+        scale_key = tuple(
+            sorted((str(name), round(float(value), 8)) for name, value in scale_states.items())
+        )
+        return (tuple(mug_variants), scale_key)
+
+    def _try_reload_cached_scene_model(self, cache_key: tuple[Any, ...]) -> bool:
+        if self._env_ref is None:
+            return False
+        cache = getattr(self, "_compiled_scene_model_cache", None)
+        if not cache:
+            return False
+        cached_model = cache.get(cache_key)
+        if cached_model is None:
+            return False
+        cache.move_to_end(cache_key)
+        self._env_ref.reload_from_model(cached_model)
+        return True
+
+    def _store_compiled_scene_model(self, cache_key: tuple[Any, ...]) -> None:
+        if self._env_ref is None:
+            return
+        cache = getattr(self, "_compiled_scene_model_cache", None)
+        if cache is None:
+            self._compiled_scene_model_cache = OrderedDict()
+            cache = self._compiled_scene_model_cache
+        cache[cache_key] = copy.deepcopy(self._env_ref.model)
+        cache.move_to_end(cache_key)
+        while len(cache) > self._scene_model_cache_size:
+            cache.popitem(last=False)
+
+    def _reload_mug_variant_scene(
+        self,
+        mug_variants: list[str],
+        scale_states: dict[str, float],
+    ) -> None:
+        if self._env_ref is None:
+            return
+
+        mug_variants = [_mug_canonical_variant_name(variant) for variant in mug_variants]
+        preserved_arm_state = self._env_ref._get_reset_arm_state()
+        scene_cache_key = self._scene_model_cache_key(mug_variants, scale_states)
+        if not self._try_reload_cached_scene_model(scene_cache_key):
+            base_scene_xml = self._base_scene_xml_string
+            base_scene_dir = self._base_scene_xml_dir
+            if base_scene_xml is None:
+                base_scene_path = _MUG_BASE_SCENE_XMLS[self.mug_task_name]
+                base_scene_xml = base_scene_path.read_text()
+                base_scene_dir = base_scene_path.parent
+
+            xml = _build_mug_scene_xml(
+                task_name=self.mug_task_name,
+                mug_variant=mug_variants[0],
+                mug_variants=mug_variants,
+                scale_states=scale_states,
+                base_scene_xml=base_scene_xml,
+                base_scene_dir=base_scene_dir,
+            )
+            if self._scene_xml_transform_options is not None and not self._base_scene_xml_transformed:
+                from xdof_sim.scene_xml import transform_scene_xml
+
+                xml, _ = transform_scene_xml(xml, options=self._scene_xml_transform_options)
+
+            self._env_ref.reload_from_xml(xml)
+            self._store_compiled_scene_model(scene_cache_key)
+
+        from xdof_sim.scene_variants import apply_scene_variant
+
+        self._current_mug_variants = list(mug_variants)
+        self._current_active_mug_count = len(mug_variants)
+        apply_scene_variant(self._env_ref.model, self._scene_variant)
+        mujoco.mj_resetData(self._env_ref.model, self._env_ref.data)
+        self._env_ref._set_qpos_from_state(preserved_arm_state)
+        mujoco.mj_forward(self._env_ref.model, self._env_ref.data)
+        self._fixed_body_nominals = None
+
+    def _sample_plain_mug_colors(
+        self,
+        rng: np.random.Generator,
+        mug_variants: list[str],
+    ) -> dict[str, list[float]]:
+        if rng.random() >= _COLOR_RANDOMIZE_PROB:
+            return {}
+        return {
+            body_name: list(_MUG_COLOR_PALETTE[int(rng.integers(len(_MUG_COLOR_PALETTE)))])
+            for body_name, mug_variant in zip(self.mug_body_names, mug_variants)
+            if mug_variant == _MUG_DEFAULT_VARIANT
+        }
+
+    def _apply_plain_mug_colors(
+        self,
+        model: Any,
+        mug_colors: dict[str, Any],
+        mug_variants: list[str],
+    ) -> None:
+        for instance_index, (body_name, mug_variant) in enumerate(zip(self.mug_body_names, mug_variants)):
+            if mug_variant != _MUG_DEFAULT_VARIANT:
+                continue
+            raw_rgba = mug_colors.get(body_name)
+            if raw_rgba is None:
+                continue
+            rgba = tuple(float(value) for value in raw_rgba)
+            if len(rgba) != 4:
+                logger.warning("Invalid mug color for %s: %r", body_name, raw_rgba)
+                continue
+            candidate_names = (
+                *_mug_plain_color_material_names(self.mug_task_name, instance_index),
+                f"{body_name}_color",
+            )
+            applied = False
+            for mat_name in candidate_names:
+                mat_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_MATERIAL, mat_name)
+                if mat_id >= 0:
+                    model.mat_rgba[mat_id] = rgba
+                    applied = True
+            if not applied:
+                logger.warning("No colorable material found for %s", body_name)
+
+
+class MugTreeRandomizer(MugVariantRandomizer):
+    mug_task_name = "mug_tree"
+    mug_body_names = ("mug_1", "mug_2", "mug_3")
+    min_mug_count = 1
+    max_mug_count = 3
+    randomize_mug_count = True
+    independent_mug_variants = True
     min_clearance_m = 0.12
-    perturbations = [
-        PerturbRange("mug_tree", delta_x=(-0.10, 0.10), delta_y=(-0.20, 0.20),
-                     delta_yaw=(-0.25, 0.25), fixed_body=True),
+    _tree_perturbation = PerturbRange(
+        "mug_tree",
+        delta_x=(-0.10, 0.10),
+        delta_y=(-0.20, 0.20),
+        delta_yaw=(-0.25, 0.25),
+        fixed_body=True,
+    )
+    _mug_perturbations = [
         PerturbRange("mug_1_jnt", delta_x=(-0.10, 0.10), delta_y=(-0.3, 0.3)),
         PerturbRange("mug_2_jnt", delta_x=(-0.10, 0.10), delta_y=(-0.3, 0.3)),
+        PerturbRange("mug_3_jnt", delta_x=(-0.10, 0.10), delta_y=(-0.3, 0.3)),
+    ]
+    perturbations = [
+        _tree_perturbation,
+        *_mug_perturbations,
     ]
 
     def randomize(
@@ -1407,28 +1875,459 @@ class MugTreeRandomizer(SceneRandomizer):
         seed: int | None = None,
         request: Any | None = None,
     ) -> RandomizationState:
-        state = super().randomize(model, data, seed, request=request)
         rng = np.random.default_rng(seed)
-        target_model = self._env_ref.model if self._env_ref is not None else model
-        if rng.random() < _COLOR_RANDOMIZE_PROB:
-            for mat_name in ("mug_1_color", "mug_2_color"):
-                _apply_mat_color(target_model, mat_name, _MUG_COLOR_PALETTE[rng.integers(len(_MUG_COLOR_PALETTE))])
+        reset_request = MugResetRequest.from_value(request)
+        requested_mug_variants = self._resolve_mug_variants(rng, reset_request)
+        requested_count = len(requested_mug_variants)
+        should_randomize_scales = (
+            True if reset_request.randomize_scales is None else bool(reset_request.randomize_scales)
+        )
+
+        last_scale_states: dict[str, float] = {}
+        for candidate_count in range(requested_count, self.min_mug_count - 1, -1):
+            mug_variants = requested_mug_variants[:candidate_count]
+            self._set_active_mug_count(candidate_count)
+            scale_states = self._sample_scale_states(rng) if should_randomize_scales else {}
+            last_scale_states = scale_states
+            self._current_scale_states = dict(scale_states)
+            self._reload_mug_variant_scene(mug_variants, scale_states)
+
+            if self._env_ref is not None:
+                model = self._env_ref.model
+                data = self._env_ref.data
+
+            metadata: dict[str, Any] = {
+                "mug_variant": mug_variants[0],
+                "mug_variants": list(mug_variants),
+                "mug_count": len(mug_variants),
+            }
+            if candidate_count != requested_count:
+                metadata["requested_mug_count"] = requested_count
+                metadata["mug_count_reduced"] = True
+
+            state = self._try_randomize_pose_with_rng(
+                model=model,
+                data=data,
+                seed=seed,
+                rng=rng,
+                scale_states=scale_states,
+                metadata=metadata,
+            )
+            if state is None:
+                continue
+
+            mug_colors = self._sample_plain_mug_colors(rng, mug_variants)
+            if mug_colors:
+                state.metadata["mug_colors"] = mug_colors
+                self._apply_plain_mug_colors(model, mug_colors, mug_variants)
+            return state
+
+        mug_variants = requested_mug_variants[: self.min_mug_count]
+        self._set_active_mug_count(len(mug_variants))
+        self._current_scale_states = dict(last_scale_states)
+        self._reload_mug_variant_scene(mug_variants, last_scale_states)
+        if self._env_ref is not None:
+            model = self._env_ref.model
+            data = self._env_ref.data
+        logger.warning(
+            "%s: no collision-free mug placement found after reducing to %d mug; using a single-mug sample",
+            type(self).__name__,
+            self.min_mug_count,
+        )
+        state = self._randomize_pose_with_rng(
+            model=model,
+            data=data,
+            seed=seed,
+            rng=rng,
+            scale_states=last_scale_states,
+            metadata={
+                "mug_variant": mug_variants[0],
+                "mug_variants": list(mug_variants),
+                "mug_count": len(mug_variants),
+                "requested_mug_count": requested_count,
+                "mug_count_reduced": True,
+            },
+        )
+        mug_colors = self._sample_plain_mug_colors(rng, mug_variants)
+        if mug_colors:
+            state.metadata["mug_colors"] = mug_colors
+            self._apply_plain_mug_colors(model, mug_colors, mug_variants)
         return state
 
+    def _set_active_mug_count(self, mug_count: int) -> None:
+        self._validate_mug_count(mug_count)
+        self._current_active_mug_count = mug_count
+        self.perturbations = [
+            self._tree_perturbation,
+            *self._mug_perturbations[:mug_count],
+        ]
 
-class MugFlipRandomizer(SceneRandomizer):
+    def _try_randomize_pose_with_rng(
+        self,
+        *,
+        model: Any,
+        data: Any,
+        seed: int | None,
+        rng: np.random.Generator,
+        scale_states: dict[str, float],
+        metadata: dict[str, Any],
+    ) -> RandomizationState | None:
+        self._before_sampling(model, data)
+        nominals = self._read_nominals(model, data)
+        for _attempt in range(self.max_tries):
+            states = self._sample_once(nominals, rng)
+            if not self._bounds_ok(states):
+                continue
+            if not self._pairwise_ok(states):
+                continue
+            self._apply_states(model, data, states)
+            mujoco.mj_forward(model, data)
+            if not self._contacts_ok(model, data):
+                continue
+            return RandomizationState(
+                seed=seed or 0,
+                object_states=states,
+                scale_states=scale_states,
+                metadata=dict(metadata),
+            )
+        return None
+
+
+class MugFlipRandomizer(MugVariantRandomizer):
+    mug_task_name = "mug_flip"
+    mug_body_names = ("mug_1", "mug_2", "mug_3", "mug_4")
+    min_mug_count = 1
+    max_mug_count = 4
+    randomize_mug_count = True
+    independent_mug_variants = True
     # Mugs start upside-down (quat=[0,1,0,0]); yaw rotation is still world-Z.
     # Tray is a fixed body; mugs are sampled relative to the tray's new position
     # so they stay on the tray after randomization.
     min_clearance_m = 0.03
-    perturbations = [
-        PerturbRange("tray", delta_x=(-0.10, 0.05), delta_y=(-0.3, 0.3),
-                     delta_yaw=(-0.25, 0.25), fixed_body=True),
-        # Mug deltas here are small offsets *relative to the tray* (not absolute).
-        # The actual sampling is handled by the overridden _sample_once below.
-        PerturbRange("mug_1_jnt", delta_x=(-0.035, 0.000), delta_y=(-0.005, 0.025)),
-        PerturbRange("mug_2_jnt", delta_x=(-0.000, 0.035), delta_y=(-0.025, 0.005)),
+    _tray_perturbation = PerturbRange("tray", delta_x=(-0.10, 0.05), delta_y=(-0.3, 0.3),
+                                      delta_yaw=(-0.25, 0.25), fixed_body=True)
+    _mug_slot_perturbations = [
+        # Mug deltas are tray-local jitter around count-specific slots.
+        PerturbRange("mug_1_jnt", delta_x=(-0.012, 0.012), delta_y=(-0.012, 0.012)),
+        PerturbRange("mug_2_jnt", delta_x=(-0.012, 0.012), delta_y=(-0.012, 0.012)),
+        PerturbRange("mug_3_jnt", delta_x=(-0.012, 0.012), delta_y=(-0.012, 0.012)),
+        PerturbRange("mug_4_jnt", delta_x=(-0.012, 0.012), delta_y=(-0.012, 0.012)),
     ]
+    _mug_slot_centers_by_count: dict[int, tuple[tuple[float, float], ...]] = {
+        1: ((0.0, 0.0),),
+        2: ((-0.064, 0.044), (0.064, -0.044)),
+        3: ((-0.068, 0.044), (0.068, 0.044), (0.0, -0.050)),
+        4: ((-0.068, 0.044), (-0.068, -0.044), (0.068, 0.044), (0.068, -0.044)),
+    }
+    perturbations = [
+        _tray_perturbation,
+        *_mug_slot_perturbations,
+    ]
+
+    def randomize(
+        self,
+        model: Any,
+        data: Any,
+        seed: int | None = None,
+        request: Any | None = None,
+    ) -> RandomizationState:
+        rng = np.random.default_rng(seed)
+        reset_request = MugResetRequest.from_value(request)
+        requested_mug_variants = self._resolve_mug_variants(rng, reset_request)
+        requested_count = len(requested_mug_variants)
+        should_randomize_scales = (
+            True if reset_request.randomize_scales is None else bool(reset_request.randomize_scales)
+        )
+
+        last_scale_states: dict[str, float] = {}
+        for candidate_count in range(requested_count, self.min_mug_count - 1, -1):
+            mug_variants = requested_mug_variants[:candidate_count]
+            self._set_active_mug_count(candidate_count)
+            scale_states = self._sample_scale_states(rng) if should_randomize_scales else {}
+            last_scale_states = scale_states
+            self._current_scale_states = dict(scale_states)
+            self._reload_mug_variant_scene(mug_variants, scale_states)
+
+            if self._env_ref is not None:
+                model = self._env_ref.model
+                data = self._env_ref.data
+
+            metadata: dict[str, Any] = {
+                "mug_variant": mug_variants[0],
+                "mug_variants": list(mug_variants),
+                "mug_count": len(mug_variants),
+            }
+            if candidate_count != requested_count:
+                metadata["requested_mug_count"] = requested_count
+                metadata["mug_count_reduced"] = True
+
+            state = self._try_randomize_pose_with_rng(
+                model=model,
+                data=data,
+                seed=seed,
+                rng=rng,
+                scale_states=scale_states,
+                metadata=metadata,
+            )
+            if state is None:
+                continue
+
+            if candidate_count != requested_count:
+                logger.info(
+                    "%s: reduced mug_count from %d to %d because selected mug assets did not fit",
+                    type(self).__name__,
+                    requested_count,
+                    candidate_count,
+                )
+            mug_colors = self._sample_plain_mug_colors(rng, mug_variants)
+            if mug_colors:
+                state.metadata["mug_colors"] = mug_colors
+                self._apply_plain_mug_colors(model, mug_colors, mug_variants)
+            self._sample_and_apply_tray_color(model, state, rng)
+            return state
+
+        mug_variants = requested_mug_variants[: self.min_mug_count]
+        self._set_active_mug_count(len(mug_variants))
+        self._current_scale_states = dict(last_scale_states)
+        self._reload_mug_variant_scene(mug_variants, last_scale_states)
+        if self._env_ref is not None:
+            model = self._env_ref.model
+            data = self._env_ref.data
+        logger.warning(
+            "%s: no collision-free mug placement found after reducing to %d mug; using a single-mug sample",
+            type(self).__name__,
+            self.min_mug_count,
+        )
+        state = self._randomize_pose_with_rng(
+            model=model,
+            data=data,
+            seed=seed,
+            rng=rng,
+            scale_states=last_scale_states,
+            metadata={
+                "mug_variant": mug_variants[0],
+                "mug_variants": list(mug_variants),
+                "mug_count": len(mug_variants),
+                "requested_mug_count": requested_count,
+                "mug_count_reduced": True,
+            },
+        )
+        mug_colors = self._sample_plain_mug_colors(rng, mug_variants)
+        if mug_colors:
+            state.metadata["mug_colors"] = mug_colors
+            self._apply_plain_mug_colors(model, mug_colors, mug_variants)
+        self._sample_and_apply_tray_color(model, state, rng)
+        return state
+
+    def apply(self, model: Any, data: Any, state: RandomizationState) -> None:
+        super().apply(model, data, state)
+        target_model = self._env_ref.model if self._env_ref is not None else model
+        tray_color = state.metadata.get("tray_color")
+        if tray_color is not None:
+            self._apply_tray_color(target_model, tray_color)
+
+    def _sample_and_apply_tray_color(
+        self,
+        model: Any,
+        state: RandomizationState,
+        rng: np.random.Generator,
+    ) -> None:
+        tray_color = list(_TRAY_COLOR_PALETTE[int(rng.integers(len(_TRAY_COLOR_PALETTE)))])
+        state.metadata["tray_color"] = tray_color
+        self._apply_tray_color(model, tray_color)
+
+    def _apply_tray_color(self, model: Any, raw_rgba: Any) -> None:
+        rgba = tuple(float(value) for value in raw_rgba)
+        if len(rgba) != 4:
+            logger.warning("Invalid mug_flip tray color: %r", raw_rgba)
+            return
+        _apply_mat_color(model, "tray_blue", rgba)
+
+    def _set_active_mug_count(self, mug_count: int) -> None:
+        self._validate_mug_count(mug_count)
+        self._current_active_mug_count = mug_count
+        self.perturbations = [
+            self._tray_perturbation,
+            *self._mug_slot_perturbations[:mug_count],
+        ]
+
+    def _get_size_perturbations(self) -> list[ScalePerturbRange]:
+        return [
+            ScalePerturbRange(perturbation.joint_name, scale_factor=self.mug_scale_factor)
+            for perturbation in self._mug_slot_perturbations[: int(getattr(self, "_current_active_mug_count", 2))]
+        ]
+
+    def _try_randomize_pose_with_rng(
+        self,
+        *,
+        model: Any,
+        data: Any,
+        seed: int | None,
+        rng: np.random.Generator,
+        scale_states: dict[str, float],
+        metadata: dict[str, Any],
+    ) -> RandomizationState | None:
+        self._before_sampling(model, data)
+        nominals = self._read_nominals(model, data)
+        for _attempt in range(self.max_tries):
+            states = self._sample_once(nominals, rng)
+            if not self._bounds_ok(states):
+                continue
+            if not self._pairwise_ok(states):
+                continue
+            self._apply_states(model, data, states)
+            mujoco.mj_forward(model, data)
+            if not self._contacts_ok(model, data):
+                continue
+            return RandomizationState(
+                seed=seed or 0,
+                object_states=states,
+                scale_states=scale_states,
+                metadata=dict(metadata),
+            )
+        return None
+
+    @staticmethod
+    def _obb_axes(yaw: float) -> tuple[np.ndarray, np.ndarray]:
+        c = float(np.cos(yaw))
+        s = float(np.sin(yaw))
+        return (
+            np.array([c, s], dtype=np.float64),
+            np.array([-s, c], dtype=np.float64),
+        )
+
+    @classmethod
+    def _obb_overlap(
+        cls,
+        center_a: np.ndarray,
+        half_a: tuple[float, float],
+        yaw_a: float,
+        center_b: np.ndarray,
+        half_b: tuple[float, float],
+        yaw_b: float,
+    ) -> bool:
+        axis_ax, axis_ay = cls._obb_axes(yaw_a)
+        axis_bx, axis_by = cls._obb_axes(yaw_b)
+        axes = (axis_ax, axis_ay, axis_bx, axis_by)
+        delta = center_b - center_a
+        half_a = (half_a[0] + _MUG_FLIP_MUG_MARGIN_M, half_a[1] + _MUG_FLIP_MUG_MARGIN_M)
+        half_b = (half_b[0] + _MUG_FLIP_MUG_MARGIN_M, half_b[1] + _MUG_FLIP_MUG_MARGIN_M)
+
+        for axis in axes:
+            distance = abs(float(np.dot(delta, axis)))
+            radius_a = (
+                half_a[0] * abs(float(np.dot(axis_ax, axis)))
+                + half_a[1] * abs(float(np.dot(axis_ay, axis)))
+            )
+            radius_b = (
+                half_b[0] * abs(float(np.dot(axis_bx, axis)))
+                + half_b[1] * abs(float(np.dot(axis_by, axis)))
+            )
+            if distance > radius_a + radius_b:
+                return False
+        return True
+
+    def _pairwise_ok(self, states: dict[str, dict[str, list[float]]]) -> bool:
+        tray_state = states.get("tray")
+        if tray_state is None:
+            return False
+
+        tray_pos = np.asarray(tray_state["pos"], dtype=np.float64)
+        tray_yaw = _yaw_from_quat(np.asarray(tray_state["quat"], dtype=np.float64))
+        c = float(np.cos(-tray_yaw))
+        s = float(np.sin(-tray_yaw))
+
+        entries: list[tuple[np.ndarray, tuple[float, float], float]] = []
+        mug_variants = list(getattr(self, "_current_mug_variants", []))
+        scale_states = getattr(self, "_current_scale_states", {})
+        for instance_index, p in enumerate(self.perturbations):
+            if p.joint_name == "tray":
+                continue
+            state = states.get(p.joint_name)
+            if state is None:
+                continue
+            rel_xy = np.asarray(state["pos"][:2], dtype=np.float64) - tray_pos[:2]
+            local_center = np.array(
+                [c * rel_xy[0] - s * rel_xy[1], s * rel_xy[0] + c * rel_xy[1]],
+                dtype=np.float64,
+            )
+            variant_index = instance_index - 1
+            variant_name = (
+                mug_variants[variant_index]
+                if variant_index < len(mug_variants)
+                else _MUG_DEFAULT_VARIANT
+            )
+            scale_factor = float(scale_states.get(p.joint_name, 1.0))
+            half_x, half_y, _min_z, _max_z = _mug_flip_compiled_metadata(variant_name)
+            local_yaw = _yaw_from_quat(np.asarray(state["quat"], dtype=np.float64)) - tray_yaw
+            entries.append(
+                (
+                    local_center,
+                    (half_x * scale_factor, half_y * scale_factor),
+                    local_yaw,
+                )
+            )
+
+        for i in range(len(entries)):
+            center_i, half_i, yaw_i = entries[i]
+            for j in range(i + 1, len(entries)):
+                center_j, half_j, yaw_j = entries[j]
+                if self._obb_overlap(center_i, half_i, yaw_i, center_j, half_j, yaw_j):
+                    return False
+        return True
+
+    def _contacts_ok(self, model: Any, data: Any) -> bool:
+        mug_root_ids: set[int] = set()
+        for p in self.perturbations:
+            if p.joint_name == "tray":
+                continue
+            jnt_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, p.joint_name)
+            if jnt_id >= 0:
+                body_id = int(model.jnt_bodyid[jnt_id])
+                mug_root_ids.add(int(model.body_rootid[body_id]))
+
+        tray_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "tray")
+        for c in range(data.ncon):
+            contact = data.contact[c]
+            b1 = int(model.geom_bodyid[contact.geom1])
+            b2 = int(model.geom_bodyid[contact.geom2])
+            r1 = int(model.body_rootid[b1])
+            r2 = int(model.body_rootid[b2])
+            if r1 != r2 and r1 in mug_root_ids and r2 in mug_root_ids:
+                return False
+            if tray_body_id >= 0:
+                mug_tray_contact = (
+                    (r1 in mug_root_ids and _mujoco_body_in_subtree(model, b2, tray_body_id))
+                    or (r2 in mug_root_ids and _mujoco_body_in_subtree(model, b1, tray_body_id))
+                )
+                if mug_tray_contact:
+                    normal_z = abs(float(np.asarray(contact.frame, dtype=np.float64).reshape(-1)[2]))
+                    if normal_z < 0.5:
+                        return False
+        return True
+
+    @staticmethod
+    def _rotated_mug_half_extents(half_x: float, half_y: float, yaw: float) -> tuple[float, float]:
+        c = abs(float(np.cos(yaw)))
+        s = abs(float(np.sin(yaw)))
+        return c * half_x + s * half_y, s * half_x + c * half_y
+
+    @staticmethod
+    def _clamp_tray_local_xy(
+        local_xy: np.ndarray,
+        extent_x: float,
+        extent_y: float,
+    ) -> np.ndarray:
+        tray_half_x, tray_half_y = _MUG_FLIP_TRAY_INNER_HALF_XY
+        x_limit = max(0.0, tray_half_x - extent_x - _MUG_FLIP_TRAY_MARGIN_M)
+        y_limit = max(0.0, tray_half_y - extent_y - _MUG_FLIP_TRAY_MARGIN_M)
+        return np.array(
+            [
+                float(np.clip(local_xy[0], -x_limit, x_limit)),
+                float(np.clip(local_xy[1], -y_limit, y_limit)),
+            ],
+            dtype=np.float64,
+        )
 
     def _sample_once(
         self,
@@ -1455,42 +2354,61 @@ class MugFlipRandomizer(SceneRandomizer):
         states["tray"] = {"pos": tray_new_pos.tolist(), "quat": tray_new_quat.tolist()}
 
         # 2. Sample each mug relative to the tray's new position.
-        # Base position = tray_new_pos + the mug's original offset from the tray nominal.
-        # A small additional per-mug delta adds variety within the tray footprint.
-        tray_nom_xy = tray_nom_pos[:2]
-        for p in self.perturbations:
-            if p.joint_name == "tray":
+        # Offsets and per-mug deltas are tray-local, then rotated by the
+        # sampled tray yaw so every active mug stays in the tray footprint.
+        tray_nom_yaw = _yaw_from_quat(tray_nom_quat)
+        tray_new_yaw = _yaw_from_quat(tray_new_quat)
+        c_new, s_new = float(np.cos(tray_new_yaw)), float(np.sin(tray_new_yaw))
+
+        def to_world_xy(local_xy: np.ndarray) -> np.ndarray:
+            return np.array(
+                [c_new * local_xy[0] - s_new * local_xy[1], s_new * local_xy[0] + c_new * local_xy[1]],
+                dtype=np.float64,
+            )
+
+        mug_perturbations = [p for p in self.perturbations if p.joint_name != "tray"]
+        mug_variants = list(
+            getattr(self, "_current_mug_variants", [_MUG_DEFAULT_VARIANT] * len(mug_perturbations))
+        )
+        scale_states = getattr(self, "_current_scale_states", {})
+        tray_floor_z = tray_new_pos[2] + _MUG_FLIP_TRAY_FLOOR_Z_OFFSET
+
+        for instance_index, p in enumerate(mug_perturbations):
+            if p.joint_name not in nominals:
                 continue
-            mug_nom_pos, mug_nom_quat = nominals[p.joint_name]
-            offset = mug_nom_pos - tray_nom_pos   # fixed offset in tray-local frame
-            base_pos = tray_new_pos + offset
-            mug_new_pos = base_pos + np.array([
-                rng.uniform(*p.delta_x),
-                rng.uniform(*p.delta_y),
-                rng.uniform(*p.delta_z),
-            ])
-            q_yaw_mug = _quat_from_yaw(rng.uniform(*p.delta_yaw))
+            _mug_nom_pos, mug_nom_quat = nominals[p.joint_name]
+            local_yaw = rng.uniform(*p.delta_yaw)
+            variant_name = (
+                mug_variants[instance_index]
+                if instance_index < len(mug_variants)
+                else _MUG_DEFAULT_VARIANT
+            )
+            scale_factor = float(scale_states.get(p.joint_name, 1.0))
+            half_x, half_y, min_z, _max_z = _mug_flip_compiled_metadata(variant_name)
+            half_x *= scale_factor
+            half_y *= scale_factor
+            min_z *= scale_factor
+            extent_x, extent_y = self._rotated_mug_half_extents(half_x, half_y, local_yaw)
+
+            slot_centers = self._mug_slot_centers_by_count[len(mug_perturbations)]
+            local_xy = np.asarray(slot_centers[instance_index], dtype=np.float64) + np.array(
+                [rng.uniform(*p.delta_x), rng.uniform(*p.delta_y)],
+                dtype=np.float64,
+            )
+            local_xy = self._clamp_tray_local_xy(local_xy, extent_x, extent_y)
+            world_xy = to_world_xy(local_xy)
+            mug_new_z = tray_floor_z + _MUG_FLIP_SPAWN_CLEARANCE_M - min_z + rng.uniform(*p.delta_z)
+            mug_new_pos = np.array(
+                [tray_new_pos[0] + world_xy[0], tray_new_pos[1] + world_xy[1], mug_new_z],
+                dtype=np.float64,
+            )
+            q_yaw_mug = _quat_from_yaw((tray_new_yaw - tray_nom_yaw) + local_yaw)
             states[p.joint_name] = {
                 "pos": mug_new_pos.tolist(),
                 "quat": _quat_mul(q_yaw_mug, mug_nom_quat).tolist(),
             }
 
         return states
-
-    def randomize(
-        self,
-        model: Any,
-        data: Any,
-        seed: int | None = None,
-        request: Any | None = None,
-    ) -> RandomizationState:
-        state = super().randomize(model, data, seed, request=request)
-        rng = np.random.default_rng(seed)
-        target_model = self._env_ref.model if self._env_ref is not None else model
-        if rng.random() < _COLOR_RANDOMIZE_PROB:
-            for mat_name in ("mug_1_color", "mug_2_color"):
-                _apply_mat_color(target_model, mat_name, _MUG_COLOR_PALETTE[rng.integers(len(_MUG_COLOR_PALETTE))])
-        return state
 
 
 class PourRandomizer(SceneRandomizer):
@@ -2253,6 +3171,7 @@ _DISHRACK_VARIANT_ALIASES: dict[str, dict[str, str]] = {
         "DishRack040": "dish_rack_7",
         "DishRack041": "dish_rack_8",
         "DishRack043": "dish_rack_9",
+        "DishRack044": "dish_rack_10",
         "DishRack047": "dish_rack_11",
         "DishRack050": "dish_rack_12",
     },
@@ -2271,6 +3190,33 @@ _DISHRACK_PLATE_WRAPPER_Z: float = 0.75
 _BASE_SCENE_XML = _MODELS_DIR / "yam_inhand_transfer_base.xml"
 _LIGHTWHEEL_BASE = _MODELS_DIR / "assets_robocasa" / "objects_lightwheel" / "lightwheel"
 _OBJAVERSE_BASE = _MODELS_DIR / "assets_robocasa" / "objaverse" / "objaverse"
+_MUG_DEFAULT_VARIANT = "mug_0"
+_MUG_BASE_SCENE_XMLS: dict[str, _Path] = {
+    "mug_flip": _MODELS_DIR / "yam_mug_flip_scene.xml",
+    "mug_tree": _MODELS_DIR / "yam_mug_tree_scene.xml",
+}
+_MUG_TASK_ASSET_ROOTS: dict[str, _Path] = {
+    "mug_flip": _MODELS_DIR / "assets" / "task_mug_flip" / "mug",
+    "mug_tree": _MODELS_DIR / "assets" / "task_mug_tree" / "mug",
+}
+_MUG_TASK_BODY_NAMES: dict[str, tuple[str, ...]] = {
+    "mug_flip": ("mug_1", "mug_2", "mug_3", "mug_4"),
+    "mug_tree": ("mug_1", "mug_2", "mug_3"),
+}
+_MUG_FLIP_TRAY_INNER_HALF_XY = (0.166, 0.112)
+_MUG_FLIP_TRAY_MARGIN_M = 0.004
+_MUG_FLIP_TRAY_FLOOR_Z_OFFSET = 0.008
+_MUG_FLIP_SPAWN_CLEARANCE_M = 0.004
+_MUG_FLIP_MUG_MARGIN_M = 0.004
+_DISHRACK_ROBOCASA_VARIANT_DIRS: dict[str, dict[str, _Path]] = {
+    "dish_rack": {
+        "dish_rack_10": _LIGHTWHEEL_BASE / "dish_rack" / "DishRack044",
+    },
+    "plate": {
+        "plate_19": _OBJAVERSE_BASE / "plate" / "plate_19",
+        "plate_20": _OBJAVERSE_BASE / "plate" / "plate_20",
+    },
+}
 
 _OBJAVERSE_CATEGORIES = {"rolling_pin", "water_bottle", "can", "ladle"}
 # Approved object categories for the inhand_transfer task.
@@ -2319,7 +3265,10 @@ def _dishrack_variant_dir(kind: str, variant_name: str) -> _Path:
     variant_name = _dishrack_canonical_variant_name(kind, variant_name)
     path = _DISHRACK_VARIANT_ROOTS[kind] / variant_name
     if not (path / "model.xml").exists():
-        raise FileNotFoundError(f"Missing {kind} variant model.xml: {path}")
+        fallback_path = _DISHRACK_ROBOCASA_VARIANT_DIRS.get(kind, {}).get(variant_name)
+        if fallback_path is None or not (fallback_path / "model.xml").exists():
+            raise FileNotFoundError(f"Missing {kind} variant model.xml: {path}")
+        return fallback_path
     return path
 
 
@@ -2359,6 +3308,7 @@ def _dishrack_normalize_plate_variants(
         )
 
     available = set(_dishrack_variant_names("plate"))
+    available.update(_DISHRACK_ROBOCASA_VARIANT_DIRS.get("plate", {}))
     invalid = [name for name in normalized if name not in available]
     if invalid:
         raise ValueError(
@@ -2725,6 +3675,363 @@ def _build_dishrack_scene_xml(
     xml = xml.replace("<!-- TASK_ASSETS_PLACEHOLDER -->", _dishrack_serialize_elements(task_assets))
     xml = xml.replace("<!-- TASK_BODY_PLACEHOLDER -->", _dishrack_serialize_elements(task_bodies))
     return _resolve_scene_xml_paths(xml, base_dir)
+
+
+@_lru_cache(maxsize=None)
+def _mug_variant_names(task_name: str) -> list[str]:
+    root = _MUG_TASK_ASSET_ROOTS[task_name]
+    variants = [
+        path.name
+        for path in root.iterdir()
+        if path.is_dir() and (path / "model.xml").exists()
+    ]
+    variants.sort(
+        key=lambda name: (
+            0,
+            int(name[len("mug_") :]),
+        )
+        if name.startswith("mug_") and name[len("mug_") :].isdigit()
+        else (1, name)
+    )
+    if not variants:
+        raise FileNotFoundError(f"No mug variants found under {root}")
+    return variants
+
+
+def _mug_canonical_variant_name(variant_name: str) -> str:
+    if variant_name == "current":
+        return _MUG_DEFAULT_VARIANT
+    if variant_name.isdigit():
+        return f"mug_{variant_name}"
+    if variant_name.startswith("mug") and variant_name[3:].isdigit():
+        return f"mug_{variant_name[3:]}"
+    return variant_name
+
+
+def _mug_variant_dir(task_name: str, variant_name: str) -> _Path:
+    variant_name = _mug_canonical_variant_name(variant_name)
+    path = _MUG_TASK_ASSET_ROOTS[task_name] / variant_name
+    if not (path / "model.xml").exists():
+        raise FileNotFoundError(f"Missing mug variant model.xml: {path}")
+    return path
+
+
+def _mug_sample_variant_name(task_name: str, rng: np.random.Generator) -> str:
+    variants = _mug_variant_names(task_name)
+    return variants[int(rng.integers(0, len(variants)))]
+
+
+def _mug_instance_prefix(variant_name: str, instance_index: int) -> str:
+    return f"mug_{instance_index}_{variant_name}"
+
+
+def _mug_prepare_imported_geoms(body: _ET.Element) -> None:
+    mass_assigned = False
+    for parent in body.iter():
+        for child in list(parent):
+            if child.tag != "geom":
+                continue
+
+            name = child.get("name", "")
+            child_class = child.get("class", "")
+            mesh_name = child.get("mesh")
+            if (
+                child_class == "region"
+                or name.startswith("reg_")
+                or mesh_name is None
+            ):
+                parent.remove(child)
+                continue
+
+            is_visual = child.get("contype") == "0" and child.get("conaffinity") == "0"
+            child.attrib.pop("class", None)
+            if is_visual:
+                child.set("group", "2")
+                child.set("contype", "0")
+                child.set("conaffinity", "0")
+                child.set("density", "0")
+                if not mass_assigned:
+                    child.set("mass", "0.05")
+                    mass_assigned = True
+                else:
+                    child.attrib.pop("mass", None)
+                continue
+
+            child.set("group", "3")
+            child.set("rgba", "0 0 0 0")
+            child.set("density", "0")
+            child.set("friction", "3.0 0.03 0.003")
+            child.set("condim", "6")
+            child.set("solref", "0.004 1")
+            child.set("solimp", "0.998 0.998 0.001")
+            child.set("priority", "1")
+            child.attrib.pop("mass", None)
+
+
+def _mug_build_object_block(
+    *,
+    task_name: str,
+    variant_name: str,
+    instance_index: int,
+    scale_factor: float,
+    joint_name: str,
+) -> tuple[list[_ET.Element], _ET.Element]:
+    variant_name = _mug_canonical_variant_name(variant_name)
+    variant_dir = _mug_variant_dir(task_name, variant_name)
+    root = _ET.parse(str(variant_dir / "model.xml")).getroot()
+    object_body = _dishrack_find_object_body(root)
+
+    prefix = _mug_instance_prefix(variant_name, instance_index)
+    mesh_map: dict[str, str] = {}
+    texture_map: dict[str, str] = {}
+    material_map: dict[str, str] = {}
+    temp_asset = _ET.Element("asset")
+
+    asset_root = root.find("asset")
+    if asset_root is not None:
+        asset_children = list(asset_root)
+        for asset_child in asset_children:
+            local_name = _dishrack_asset_local_name(asset_child)
+            if asset_child.tag == "mesh":
+                mesh_map[local_name] = _dishrack_prefixed_name(prefix, local_name)
+            elif asset_child.tag == "texture":
+                texture_map[local_name] = _dishrack_prefixed_name(prefix, local_name)
+            elif asset_child.tag == "material":
+                material_map[local_name] = _dishrack_prefixed_name(prefix, local_name)
+
+        for asset_child in asset_children:
+            cloned = copy.deepcopy(asset_child)
+            local_name = _dishrack_asset_local_name(asset_child)
+            if asset_child.tag == "mesh":
+                cloned.set("name", mesh_map[local_name])
+                _dishrack_absolutize_file_attr(cloned, variant_dir)
+            elif asset_child.tag == "texture":
+                cloned.set("name", texture_map[local_name])
+                _dishrack_absolutize_file_attr(cloned, variant_dir)
+            elif asset_child.tag == "material":
+                cloned.set("name", material_map[local_name])
+                texture_name = asset_child.get("texture")
+                if texture_name and texture_name in texture_map:
+                    cloned.set("texture", texture_map[texture_name])
+            temp_asset.append(cloned)
+
+    cloned_body = copy.deepcopy(object_body)
+    _dishrack_remove_dynamic_joints(cloned_body)
+    _dishrack_prefix_body_names(cloned_body, prefix)
+    _dishrack_rewrite_asset_refs(
+        cloned_body,
+        mesh_map=mesh_map,
+        material_map=material_map,
+    )
+    _mug_prepare_imported_geoms(cloned_body)
+
+    if abs(scale_factor - 1.0) > 1e-9:
+        mesh_assets = {
+            mesh.get("name", ""): mesh
+            for mesh in temp_asset.findall("mesh")
+            if mesh.get("name")
+        }
+        _scale_body_subtree(
+            body=cloned_body,
+            factor=scale_factor,
+            target_name=joint_name,
+            asset_elem=temp_asset,
+            mesh_assets=mesh_assets,
+        )
+
+    return list(temp_asset), cloned_body
+
+
+def _mug_replace_body_contents(wrapper: _ET.Element, imported_body: _ET.Element) -> None:
+    for child in list(wrapper):
+        if child.tag not in {"freejoint", "joint"}:
+            wrapper.remove(child)
+    wrapper.append(imported_body)
+
+
+def _mug_remove_inactive_bodies(root: _ET.Element, inactive_body_names: set[str]) -> None:
+    if not inactive_body_names:
+        return
+    for parent in root.iter():
+        for child in list(parent):
+            if child.tag == "body" and child.get("name") in inactive_body_names:
+                parent.remove(child)
+
+
+def _mug_rewrite_home_keyframe(root: _ET.Element, active_body_names: tuple[str, ...]) -> None:
+    keyframe = root.find("keyframe")
+    if keyframe is None:
+        return
+    home_key = keyframe.find("./key[@name='home']")
+    if home_key is None:
+        return
+
+    raw_qpos = home_key.get("qpos", "")
+    qpos_values = _parse_float_list(raw_qpos) if raw_qpos else []
+    arm_qpos = qpos_values[-16:] if len(qpos_values) >= 16 else []
+    object_qpos: list[float] = []
+    for body_name in active_body_names:
+        body = root.find(f".//body[@name='{body_name}']")
+        if body is None:
+            continue
+        object_qpos.extend(_parse_float_list(body.get("pos", "0 0 0")))
+        object_qpos.extend(_parse_float_list(body.get("quat", "1 0 0 0")))
+    if object_qpos or arm_qpos:
+        home_key.set("qpos", _format_float_list([*object_qpos, *arm_qpos]))
+
+
+def _build_mug_scene_xml(
+    *,
+    task_name: str,
+    mug_variant: str,
+    mug_variants: list[str] | tuple[str, ...] | None = None,
+    scale_states: dict[str, float],
+    base_scene_xml: str | None,
+    base_scene_dir: _Path | None,
+) -> str:
+    base_text = base_scene_xml or _MUG_BASE_SCENE_XMLS[task_name].read_text()
+    base_dir = base_scene_dir or _MUG_BASE_SCENE_XMLS[task_name].parent
+    if mug_variants is None:
+        body_names = _MUG_TASK_BODY_NAMES[task_name]
+        default_count = min(2, len(body_names))
+        normalized_mug_variants = [_mug_canonical_variant_name(mug_variant)] * default_count
+    else:
+        normalized_mug_variants = [_mug_canonical_variant_name(str(variant)) for variant in mug_variants]
+    body_names = _MUG_TASK_BODY_NAMES[task_name]
+    if not 1 <= len(normalized_mug_variants) <= len(body_names):
+        raise ValueError(
+            f"{task_name} requires between 1 and {len(body_names)} mug variants, "
+            f"got {len(normalized_mug_variants)}"
+        )
+
+    root = _ET.fromstring(base_text)
+    asset_elem = root.find("asset")
+    if asset_elem is None:
+        raise ValueError("Mug scene XML is missing <asset>")
+    worldbody = root.find("worldbody")
+    if worldbody is None:
+        raise ValueError("Mug scene XML is missing <worldbody>")
+
+    active_body_names = body_names[: len(normalized_mug_variants)]
+    _mug_remove_inactive_bodies(root, set(body_names[len(normalized_mug_variants) :]))
+    _mug_rewrite_home_keyframe(root, active_body_names)
+
+    for instance_index, (body_name, current_mug_variant) in enumerate(
+        zip(active_body_names, normalized_mug_variants)
+    ):
+        wrapper = worldbody.find(f".//body[@name='{body_name}']")
+        if wrapper is None:
+            raise ValueError(f"Mug scene XML is missing body {body_name!r}")
+        joint_name = f"{body_name}_jnt"
+        variant_assets, imported_body = _mug_build_object_block(
+            task_name=task_name,
+            variant_name=current_mug_variant,
+            instance_index=instance_index,
+            scale_factor=float(scale_states.get(joint_name, 1.0)),
+            joint_name=joint_name,
+        )
+        for asset in variant_assets:
+            asset_elem.append(asset)
+        _mug_replace_body_contents(wrapper, imported_body)
+
+    return _resolve_scene_xml_paths(_ET.tostring(root, encoding="unicode"), base_dir)
+
+
+def _mujoco_body_in_subtree(model: mujoco.MjModel, body_id: int, root_body_id: int) -> bool:
+    current = int(body_id)
+    while current >= 0:
+        if current == root_body_id:
+            return True
+        parent = int(model.body_parentid[current])
+        if parent == current:
+            break
+        current = parent
+    return False
+
+
+@_lru_cache(maxsize=None)
+def _mug_flip_compiled_metadata(variant_name: str) -> tuple[float, float, float, float]:
+    """Return collision bounds for a mug_flip asset relative to the wrapper body."""
+    variant_name = _mug_canonical_variant_name(variant_name)
+    xml = _build_mug_scene_xml(
+        task_name="mug_flip",
+        mug_variant=variant_name,
+        mug_variants=[variant_name],
+        scale_states={},
+        base_scene_xml=None,
+        base_scene_dir=None,
+    )
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    mug_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "mug_1")
+    if mug_body_id < 0:
+        raise ValueError(f"Compiled mug_flip scene for {variant_name} is missing mug_1")
+
+    def collect_bounds(collision_only: bool) -> tuple[np.ndarray, np.ndarray] | None:
+        mins: list[np.ndarray] = []
+        maxs: list[np.ndarray] = []
+        for geom_id in range(model.ngeom):
+            body_id = int(model.geom_bodyid[geom_id])
+            if not _mujoco_body_in_subtree(model, body_id, mug_body_id):
+                continue
+            if collision_only and not (
+                int(model.geom_contype[geom_id]) or int(model.geom_conaffinity[geom_id])
+            ):
+                continue
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id) or ""
+            if name.startswith("reg_"):
+                continue
+            lower, upper = _dishrack_geom_world_bounds(model, data, geom_id)
+            mins.append(lower)
+            maxs.append(upper)
+        if not mins:
+            return None
+        return np.vstack(mins).min(axis=0), np.vstack(maxs).max(axis=0)
+
+    bounds = collect_bounds(collision_only=True) or collect_bounds(collision_only=False)
+    if bounds is None:
+        raise ValueError(f"Compiled mug_flip scene for {variant_name} has no mug geoms")
+
+    min_xyz, max_xyz = bounds
+    mug_pos = np.asarray(data.xpos[mug_body_id], dtype=np.float64)
+    rel_min = min_xyz - mug_pos
+    rel_max = max_xyz - mug_pos
+    half_x = max(abs(float(rel_min[0])), abs(float(rel_max[0])))
+    half_y = max(abs(float(rel_min[1])), abs(float(rel_max[1])))
+    return half_x, half_y, float(rel_min[2]), float(rel_max[2])
+
+
+@_lru_cache(maxsize=None)
+def _mug_plain_source_color_material_names(task_name: str) -> tuple[str, ...]:
+    variant_dir = _mug_variant_dir(task_name, _MUG_DEFAULT_VARIANT)
+    root = _ET.parse(str(variant_dir / "model.xml")).getroot()
+    asset_root = root.find("asset")
+    if asset_root is None:
+        return ()
+
+    names: list[str] = []
+    for material in asset_root.findall("material"):
+        rgba_attr = material.get("rgba")
+        material_name = material.get("name")
+        if not rgba_attr or not material_name:
+            continue
+        rgba = _parse_float_list(rgba_attr)
+        if len(rgba) < 3:
+            continue
+        if max(rgba[:3]) - min(rgba[:3]) < 0.04 and min(rgba[:3]) > 0.75:
+            continue
+        names.append(material_name)
+    return tuple(names)
+
+
+def _mug_plain_color_material_names(task_name: str, instance_index: int) -> tuple[str, ...]:
+    prefix = _mug_instance_prefix(_MUG_DEFAULT_VARIANT, instance_index)
+    return tuple(
+        _dishrack_prefixed_name(prefix, name)
+        for name in _mug_plain_source_color_material_names(task_name)
+    )
 
 
 def _inhand_asset_base(category: str) -> _Path:

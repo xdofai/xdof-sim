@@ -288,24 +288,35 @@ warning and keeps the last sampled placement anyway.
 
 #### Mugs
 
-- `mug_1_jnt`
-  - relative `delta_x = [-0.035, 0.000]`
-  - relative `delta_y = [-0.005, 0.025]`
-  - full default yaw randomization: `delta_yaw = [-pi, pi]`
-- `mug_2_jnt`
-  - relative `delta_x = [-0.000, 0.035]`
-  - relative `delta_y = [-0.025, 0.005]`
+- Active mug count is randomized from `1` to `4` on reset.
+- Mug mesh assets are randomized on reset from task-local variants:
+  - `task_mug_flip/mug/mug_0` is the original plain mug
+  - `task_mug_flip/mug/mug_1` onward are copied Objaverse mug assets
+- Each active mug samples its own asset variant independently.
+- Each active mug samples a mesh scale factor from `[0.90, 1.10]`.
+- Active mug slots use count-specific tray-local centers:
+  - `1`: `(0.000, 0.000)`
+  - `2`: `(-0.064, 0.044)`, `(0.064, -0.044)`
+  - `3`: `(-0.068, 0.044)`, `(0.068, 0.044)`, `(0.000, -0.050)`
+  - `4`: `(-0.068, 0.044)`, `(-0.068, -0.044)`, `(0.068, 0.044)`, `(0.068, -0.044)`
+- Each active mug joint samples tray-local jitter:
+  - `delta_x = [-0.012, 0.012]`
+  - `delta_y = [-0.012, 0.012]`
   - full default yaw randomization: `delta_yaw = [-pi, pi]`
 
 #### Custom logic
 
 - The tray is sampled first
 - Each mug is then placed relative to the tray's new pose, using:
-  - the mug's original tray-relative offset
-  - plus a small extra mug-local delta
-- This keeps the mugs on the tray after randomization
-- Mug colors are randomized with probability `1.0` from the shared mug color
-  palette:
+  - count-specific tray-local slots
+  - per-asset collision bounds
+  - a small extra tray-local delta
+- This keeps mugs inside the tray and reduces the active mug count when a sampled
+  set is too large to fit without mug-mug overlap
+- The tray material `tray_blue` is recolored on every reset from the shared tray
+  color palette
+- When `mug_0` is sampled, its plain material is recolored with probability
+  `1.0` from the shared mug color palette:
   - original green
   - red-orange
   - amber
@@ -330,6 +341,12 @@ warning and keeps the last sampled placement anyway.
 
 #### Mugs
 
+- Active mug count is randomized from `1` to `3` on reset.
+- Mug mesh assets are randomized on reset from task-local variants:
+  - `task_mug_tree/mug/mug_0` is the original plain mug
+  - `task_mug_tree/mug/mug_1` onward are copied Objaverse mug assets
+- Each active mug samples its own asset variant independently.
+- Each mug samples a mesh scale factor from `[0.90, 1.10]`.
 - `mug_1_jnt`
   - `delta_x = [-0.10, 0.10]`
   - `delta_y = [-0.30, 0.30]`
@@ -338,11 +355,18 @@ warning and keeps the last sampled placement anyway.
   - `delta_x = [-0.10, 0.10]`
   - `delta_y = [-0.30, 0.30]`
   - `delta_yaw = [-pi, pi]` by default
+- `mug_3_jnt`
+  - `delta_x = [-0.10, 0.10]`
+  - `delta_y = [-0.30, 0.30]`
+  - `delta_yaw = [-pi, pi]` by default
 
 #### Custom logic
 
-- Mug materials `mug_1_color` and `mug_2_color` are randomized with
-  probability `1.0` from the shared mug palette
+- Mug placement is retried until no active mugs collide with each other or the
+  mug tree. If a sampled asset set cannot be placed collision-free, the active
+  mug count is reduced.
+- When `mug_0` is sampled, its plain material is recolored with probability
+  `1.0` from the shared mug palette
 
 ### 9. Pouring Beads
 

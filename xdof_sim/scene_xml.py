@@ -174,6 +174,19 @@ def apply_clean_xml(xml: str) -> str:
 
 
 def apply_mocap_xml(xml: str, *, debug: bool) -> str:
+    root = _load_xml_root(xml)
+    _remove_matching_children(
+        root,
+        lambda child: child.tag == "body"
+        and child.get("name") in {"left_mocap", "right_mocap"},
+    )
+    equality = root.find("equality")
+    if equality is not None:
+        for child in list(equality):
+            if child.tag == "weld" and child.get("name") in {"left_mocap_weld", "right_mocap_weld"}:
+                equality.remove(child)
+    xml = _xml_to_string(root)
+
     left_mocap_geom = ""
     right_mocap_geom = ""
     if debug:

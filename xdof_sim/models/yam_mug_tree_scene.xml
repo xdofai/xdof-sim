@@ -46,6 +46,7 @@
     <material name="mug_green" specular="0.5" shininess="0.003" rgba="0.172 0.780 0.435 1.0"/>
     <material name="mug_1_color" specular="0.5" shininess="0.003" rgba="0.172 0.780 0.435 1.0"/>
     <material name="mug_2_color" specular="0.5" shininess="0.003" rgba="0.85 0.2 0.15 1.0"/>
+    <material name="mug_3_color" specular="0.5" shininess="0.003" rgba="0.2 0.35 0.85 1.0"/>
     <material name="mug_white" specular="0.5" shininess="0.003" rgba="0.930 0.930 0.930 1.0"/>
     <texture name="mug_tree_tex" type="2d" file="mug_tree/texture.png"/>
     <material name="mug_tree_mat" texture="mug_tree_tex" specular="0.3" shininess="0.3"/>
@@ -233,6 +234,44 @@
       <freejoint name="mug_2_jnt"/>
       <geom type="mesh" mesh="mug_vis_0" material="mug_white" mass="0.05" density="0" contype="0" conaffinity="0" group="2"/>
       <geom type="mesh" mesh="mug_vis_1" material="mug_2_color" density="0" contype="0" conaffinity="0" group="2"/>
+      <geom type="mesh" mesh="mug_col_0" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_1" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_2" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_3" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_4" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_5" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_6" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_7" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_8" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_9" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_10" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_11" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_12" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_13" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_14" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_15" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_16" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_17" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_18" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_19" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_20" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_21" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_22" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_23" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_24" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_25" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_26" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_27" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_28" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_29" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_30" class="mug_col"/>
+      <geom type="mesh" mesh="mug_col_31" class="mug_col"/>
+    </body>
+
+    <body name="mug_3" pos="0.45 0.0 0.80">
+      <freejoint name="mug_3_jnt"/>
+      <geom type="mesh" mesh="mug_vis_0" material="mug_white" mass="0.05" density="0" contype="0" conaffinity="0" group="2"/>
+      <geom type="mesh" mesh="mug_vis_1" material="mug_3_color" density="0" contype="0" conaffinity="0" group="2"/>
       <geom type="mesh" mesh="mug_col_0" class="mug_col"/>
       <geom type="mesh" mesh="mug_col_1" class="mug_col"/>
       <geom type="mesh" mesh="mug_col_2" class="mug_col"/>
@@ -529,6 +568,7 @@
     <key name="home"
       qpos="0.45 0.15 0.80 1 0 0 0
             0.50 -0.15 0.80 1 0 0 0
+            0.45 0.0 0.80 1 0 0 0
             0 1.047 1.047 0 0 0 0 0  0 1.047 1.047 0 0 0 0 0"
       ctrl="0 1.047 1.047 0 0 0 0  0 1.047 1.047 0 0 0 0"/>
   </keyframe>
