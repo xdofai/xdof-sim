@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Literal
 from typing import Sequence
 
+import mujoco
 import numpy as np
 from PIL import Image
 
@@ -167,6 +168,21 @@ def _sample_qpos_frames_for_video(
     idx = np.searchsorted(source_ts, output_ts, side="right") - 1
     idx = np.clip(idx, 0, len(source_ts) - 1)
     return qpos_frames[idx]
+
+
+def _qpos_frames_from_integration_states(session, integration_states: np.ndarray) -> np.ndarray:
+    """Materialize MuJoCo qpos frames from recorded mjSTATE_INTEGRATION states."""
+    if session.sim_state_spec is None:
+        raise RuntimeError("Integration-state replay requires a MuJoCo state spec")
+    states = np.asarray(integration_states, dtype=np.float64)
+    if states.ndim != 2:
+        raise RuntimeError(f"Expected integration states shape (T, D), got {states.shape}")
+    qpos = np.empty((len(states), session.model.nq), dtype=np.float32)
+    for idx, state in enumerate(states):
+        mujoco.mj_setState(session.model, session.data, state, session.sim_state_spec)
+        mujoco.mj_forward(session.model, session.data)
+        qpos[idx] = np.asarray(session.data.qpos, dtype=np.float32).copy()
+    return qpos
 
 
 def _batched_sim_camera_indices(session) -> list[int]:
@@ -368,13 +384,21 @@ def export_batched_qpos_sim_video(
     if (
         session.mode != "qpos"
         or not session.has_exact_qpos
-        or session.sim_states is None
         or session.sim_state_alignment != "initial"
     ):
-        raise RuntimeError("Batched sim export requires qpos replay mode with aligned exact-qpos states")
+        raise RuntimeError("Batched sim export requires qpos replay mode with aligned exact states")
 
     session.reset()
-    qpos_frames = session.sim_states if include_initial_frame else session.sim_states[1:]
+    if session.sim_integration_states is not None:
+        qpos_frames = _qpos_frames_from_integration_states(
+            session,
+            session.sim_integration_states,
+        )
+    elif session.sim_states is not None:
+        qpos_frames = session.sim_states
+    else:
+        raise RuntimeError("Batched sim export requires aligned sim states")
+    qpos_frames = qpos_frames if include_initial_frame else qpos_frames[1:]
     source_ts = _infer_qpos_frame_timestamps(
         session,
         frame_count=len(qpos_frames),

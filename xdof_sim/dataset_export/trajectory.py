@@ -13,7 +13,10 @@ from xdof_sim.dataset_export.metadata import (
     normalize_task_name,
 )
 from xdof_sim.dataset_export.types import ExportTrajectory
-from xdof_sim.rendering.replay.timeline import sample_hold_align
+from xdof_sim.rendering.replay.timeline import (
+    normalize_delivered_integration_timestamps,
+    sample_hold_align,
+)
 from xdof_sim.rendering.replay.types import EpisodeContext
 
 
@@ -38,27 +41,7 @@ def normalize_integration_timestamps(context: EpisodeContext) -> np.ndarray | No
     """Shift integration-state timestamps onto the action clock when present."""
     if context.raw_sim_integration_states is None:
         return None
-    raw_ts = context.raw_sim_integration_timestamps
-    if raw_ts is None:
-        if (
-            context.raw_sim_timestamps is not None
-            and context.raw_sim_states is not None
-            and len(context.raw_sim_integration_states) == len(context.raw_sim_states)
-        ):
-            return normalize_sim_timestamps(context)
-        return None
-
-    ts = np.asarray(raw_ts, dtype=np.float64)
-    if len(ts) == 0:
-        raise ValueError("Episode context contains no integration-state timestamps")
-    if (
-        context.episode_format == "delivered"
-        and len(context.streams.ts_left) > 0
-        and context.streams.ts_left[0] < 1e6
-        and abs(float(ts[0] - context.streams.ts_left[0])) > 1.0
-    ):
-        return ts - ts[0]
-    return ts
+    return normalize_delivered_integration_timestamps(context)
 
 
 def build_export_grid(
@@ -84,7 +67,7 @@ def build_export_grid(
     if duration <= 0:
         return np.array([window_start], dtype=np.float64)
 
-    num_steps = max(1, int(np.floor(duration * fps)))
+    num_steps = max(1, int(np.floor(duration * fps + 1e-9)))
     return window_start + np.arange(num_steps, dtype=np.float64) / float(fps)
 
 

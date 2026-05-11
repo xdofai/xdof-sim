@@ -15,6 +15,7 @@ from xdof_sim.dataset_export.metadata import (
 from xdof_sim.dataset_export.trajectory import (
     build_export_grid,
     build_export_trajectory,
+    normalize_integration_timestamps,
     normalize_sim_timestamps,
 )
 from xdof_sim.env import project_policy_state
@@ -145,7 +146,11 @@ class ExportTrajectoryTests(unittest.TestCase):
                     ],
                     dtype=np.float64,
                 ),
-                "raw_sim_integration_timestamps": np.array([42.0, 42.5, 43.0], dtype=np.float64),
+                "raw_sim_integration_timestamps": np.array([0.918, 1.418, 1.918], dtype=np.float64),
+                "raw_sim_integration_wallclock_timestamps": np.array(
+                    [1_700_000_000.0, 1_700_000_000.5, 1_700_000_001.0],
+                    dtype=np.float64,
+                ),
                 "raw_sim_state_spec": 16383,
             }
         )
@@ -177,6 +182,73 @@ class ExportTrajectoryTests(unittest.TestCase):
             ),
         )
         self.assertEqual(mj_set_state_mock.call_count, 4)
+
+    def test_normalize_integration_timestamps_zero_bases_subsecond_delivered_sim_time(self) -> None:
+        context = make_context()
+        context = EpisodeContext(
+            **{
+                **context.__dict__,
+                "raw_sim_integration_states": np.zeros((3, 3), dtype=np.float64),
+                "raw_sim_integration_timestamps": np.array([0.918, 1.418, 1.918], dtype=np.float64),
+                "raw_sim_integration_wallclock_timestamps": np.array(
+                    [1_700_000_000.0, 1_700_000_000.5, 1_700_000_001.0],
+                    dtype=np.float64,
+                ),
+                "raw_sim_state_spec": 16383,
+            }
+        )
+
+        np.testing.assert_allclose(
+            normalize_integration_timestamps(context),
+            np.array([0.0, 0.5, 1.0], dtype=np.float64),
+        )
+
+    def test_build_export_trajectory_rejects_integration_state_without_timestamps(self) -> None:
+        context = make_context()
+        context = EpisodeContext(
+            **{
+                **context.__dict__,
+                "raw_sim_integration_states": np.zeros((3, 3), dtype=np.float64),
+                "raw_sim_integration_timestamps": None,
+                "raw_sim_state_spec": 16383,
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "requires integration_state_sim_time.npy"):
+            build_export_trajectory(context, FakeIntegrationEnv(), fps=4.0)
+
+    def test_delivered_integration_timestamps_require_wallclock_validation(self) -> None:
+        context = make_context()
+        context = EpisodeContext(
+            **{
+                **context.__dict__,
+                "raw_sim_integration_states": np.zeros((3, 3), dtype=np.float64),
+                "raw_sim_integration_timestamps": np.array([0.918, 1.418, 1.918], dtype=np.float64),
+                "raw_sim_integration_wallclock_timestamps": None,
+                "raw_sim_state_spec": 16383,
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "requires integration_state_wallclock.npy"):
+            normalize_integration_timestamps(context)
+
+    def test_delivered_integration_timestamps_reject_wallclock_elapsed_mismatch(self) -> None:
+        context = make_context()
+        context = EpisodeContext(
+            **{
+                **context.__dict__,
+                "raw_sim_integration_states": np.zeros((3, 3), dtype=np.float64),
+                "raw_sim_integration_timestamps": np.array([0.918, 1.418, 1.918], dtype=np.float64),
+                "raw_sim_integration_wallclock_timestamps": np.array(
+                    [1_700_000_000.0, 1_700_000_010.0, 1_700_000_020.0],
+                    dtype=np.float64,
+                ),
+                "raw_sim_state_spec": 16383,
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "sim-time and wallclock elapsed clocks disagree"):
+            normalize_integration_timestamps(context)
 
 
 if __name__ == "__main__":

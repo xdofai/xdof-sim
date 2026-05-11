@@ -217,11 +217,13 @@ def _mj_state_integration_spec() -> int:
     return int(mujoco.mjtState.mjSTATE_INTEGRATION.value)
 
 
-def load_integration_states(episode_dir: Path) -> tuple[np.ndarray | None, np.ndarray | None, int | None]:
+def load_integration_states(
+    episode_dir: Path,
+) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None, int | None]:
     """Load delivered mjSTATE_INTEGRATION snapshots when present."""
     path = episode_dir / "integration_state.npy"
     if not path.exists():
-        return None, None, None
+        return None, None, None, None
 
     states = np.asarray(np.load(path))
     if states.ndim != 2 or len(states) == 0:
@@ -239,7 +241,19 @@ def load_integration_states(episode_dir: Path) -> tuple[np.ndarray | None, np.nd
                 f"in {episode_dir}"
             )
 
-    return states, timestamps, _mj_state_integration_spec()
+    wallclock_timestamps = None
+    wallclock_path = episode_dir / "integration_state_wallclock.npy"
+    if wallclock_path.exists():
+        wallclock_timestamps = np.asarray(np.load(wallclock_path), dtype=np.float64)
+        if wallclock_timestamps.ndim != 1:
+            raise ValueError(f"Expected 1D integration wallclock timestamps in {wallclock_path}, got {wallclock_timestamps.shape}")
+        if len(wallclock_timestamps) != len(states):
+            raise ValueError(
+                f"integration_state_wallclock.npy length mismatch: {len(wallclock_timestamps)} vs {len(states)} "
+                f"in {episode_dir}"
+            )
+
+    return states, timestamps, wallclock_timestamps, _mj_state_integration_spec()
 
 
 def _extract_recorded_physics_overrides(metadata: dict[str, Any]) -> dict[str, Any] | None:
@@ -612,7 +626,7 @@ def _load_direct_topic_positions(
 
 
 def _load_direct_actions(episode_dir: Path, side: str) -> tuple[np.ndarray, np.ndarray]:
-    """Load 7D actions, preferring explicit action-side gripper topics when available."""
+    """Load 7D actions from explicit command-state or action-side gripper topics."""
     state_file = episode_dir / f"{side}.mcap"
     command_state = None
     if state_file.exists():
@@ -655,36 +669,11 @@ def _load_direct_actions(episode_dir: Path, side: str) -> tuple[np.ndarray, np.n
         grip = sample_hold_align(grip_pos, grip_ts, action_ts)
         return np.concatenate([action_pos, grip], axis=1), action_ts
 
-    grip_file = state_file
-    if grip_file.exists():
-        obs_robot = _load_direct_topic_positions(
-            grip_file,
-            topic=f"/{side}-robot-state",
-        )
-        obs_gripper = _load_direct_topic_positions(
-            grip_file,
-            topic=f"/{side}-gripper-state",
-        )
-        if obs_robot is not None:
-            obs_pos, obs_ts = obs_robot
-        else:
-            obs_pos, obs_ts = _load_direct_protobuf_positions(grip_file)
-
-        if obs_gripper is not None:
-            grip_pos, grip_ts = obs_gripper
-            if grip_pos.shape[1] != 1:
-                raise ValueError(
-                    f"Expected 1D observed gripper in {grip_file}, got shape {grip_pos.shape}"
-                )
-            grip = sample_hold_align(grip_pos, grip_ts, action_ts)
-        elif obs_pos.shape[1] >= 7:
-            grip = sample_hold_align(obs_pos[:, 6:7], obs_ts, action_ts)
-        else:
-            grip = np.zeros((len(action_pos), 1), dtype=np.float64)
-    else:
-        grip = np.zeros((len(action_pos), 1), dtype=np.float64)
-
-    return np.concatenate([action_pos, grip], axis=1), action_ts
+    raise ValueError(
+        f"Direct episode is missing explicit action gripper stream "
+        f"/action-{side}-gripper-state in {action_file}; refusing to use observed "
+        "gripper state or zero-filled gripper actions."
+    )
 
 
 def _load_direct_recorded_cameras(episode_dir: Path) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
@@ -1285,9 +1274,15 @@ def load_episode_context(episode_dir: Path, *, load_recorded_cameras: bool = Tru
                     "randomization.json; refusing to render a default scene."
                 )
             scene_source = "randomization.json"
-        raw_integration_states, raw_integration_timestamps, raw_state_spec = load_integration_states(episode_dir)
+        (
+            raw_integration_states,
+            raw_integration_timestamps,
+            raw_integration_wallclock_timestamps,
+            raw_state_spec,
+        ) = load_integration_states(episode_dir)
     else:
         rand_state = load_randomization(episode_dir)
+        raw_integration_wallclock_timestamps = None
     replay_actions = None
     replay_timestamps = None
     replay_state_alignment = "initial"
@@ -1315,6 +1310,7 @@ def load_episode_context(episode_dir: Path, *, load_recorded_cameras: bool = Tru
         scene_source=scene_source,
         raw_sim_integration_states=raw_integration_states,
         raw_sim_integration_timestamps=raw_integration_timestamps,
+        raw_sim_integration_wallclock_timestamps=raw_integration_wallclock_timestamps,
         raw_sim_state_spec=raw_state_spec,
         initial_scene_qpos=initial_scene_qpos,
         initial_scene_integration_state=(

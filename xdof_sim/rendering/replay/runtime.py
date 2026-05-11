@@ -27,20 +27,7 @@ def create_replay_env(
         **dict(context.physics_overrides or {}),
     )
     using_scene_xml = context.scene_xml_string is not None
-    try:
-        env = xdof_sim.make_env(**make_env_kwargs)
-    except ValueError as exc:
-        if context.scene_xml_string is None or context.rand_state is None:
-            raise
-        episode_dir = getattr(getattr(context, "streams", None), "episode_dir", "<unknown>")
-        print(
-            f"  Warning: failed to load scene_assembled.xml for {episode_dir}: {exc}. "
-            "Falling back to recorded randomization.json."
-        )
-        make_env_kwargs["scene_xml_string"] = None
-        make_env_kwargs["enable_task_randomizer"] = True
-        env = xdof_sim.make_env(**make_env_kwargs)
-        using_scene_xml = False
+    env = xdof_sim.make_env(**make_env_kwargs)
 
     env.reset(randomize=False)
 

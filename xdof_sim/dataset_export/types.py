@@ -10,6 +10,9 @@ import numpy as np
 
 RenderBackend = Literal["mujoco", "mjwarp", "madrona"]
 
+DEFAULT_IMAGE_WIDTH = 224
+DEFAULT_IMAGE_HEIGHT = 168
+
 
 @dataclass(frozen=True)
 class ExportConfig:
@@ -17,8 +20,8 @@ class ExportConfig:
 
     batch_name: str
     fps: float = 30.0
-    image_width: int = 224
-    image_height: int = 224
+    image_width: int = DEFAULT_IMAGE_WIDTH
+    image_height: int = DEFAULT_IMAGE_HEIGHT
     render_backend: RenderBackend = "mjwarp"
     sim_batch_size: int = 32
     gpu_id: int | None = None

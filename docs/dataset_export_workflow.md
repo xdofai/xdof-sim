@@ -112,12 +112,14 @@ uv run python -m xdof_sim.dataset_export.cli s3-export \
   --batch-name sim_tasks_20260409_224 \
   --render-backend madrona \
   --img-width 224 \
-  --img-height 224 \
+  --img-height 168 \
   --fps 30 \
   --sim-batch-size 32
 ```
 
-For `mjwarp` or `mujoco`, change `--render-backend`.
+The default export resolution is `224x168` per camera, matching the stored RealSense
+videos. The training dataloader pads those frames to `224x224` when requested by the
+image transform. For `mjwarp` or `mujoco`, change `--render-backend`.
 
 Useful knobs:
 
@@ -211,7 +213,7 @@ uv run python -m xdof_sim.dataset_export.cli run \
   --batch-name sim_tasks_20260409_224 \
   --render-backend mjwarp \
   --img-width 224 \
-  --img-height 224 \
+  --img-height 168 \
   --fps 30 \
   --sim-batch-size 32 \
   --s3-prefix s3://far-research-internal/datasets/robot_path/sim_tasks_20260409_224/ \
@@ -246,7 +248,7 @@ uv run python -m xdof_sim.dataset_export.cli s3-export \
   --batch-name sim_tasks_20260409_224_smoke \
   --render-backend mjwarp \
   --img-width 224 \
-  --img-height 224 \
+  --img-height 168 \
   --fps 30 \
   --sim-batch-size 32 \
   --max-episodes 1

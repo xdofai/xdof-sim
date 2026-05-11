@@ -70,8 +70,12 @@ class ReplaySession:
 
     def _resolve_mode(self, mode: ReplayMode) -> Literal["physics", "qpos"]:
         if mode == "auto":
-            return "qpos" if self.sim_states is not None else "physics"
-        if mode == "qpos" and self.sim_states is None:
+            return (
+                "qpos"
+                if self.sim_states is not None or self.sim_integration_states is not None
+                else "physics"
+            )
+        if mode == "qpos" and self.sim_states is None and self.sim_integration_states is None:
             raise ValueError("qpos replay mode requested but no aligned sim states are available")
         return mode
 
@@ -85,14 +89,19 @@ class ReplaySession:
 
     @property
     def has_exact_qpos(self) -> bool:
-        return self.sim_states is not None and self.sim_state_kind == "qpos"
+        return (
+            self.sim_integration_states is not None
+            or (self.sim_states is not None and self.sim_state_kind == "qpos")
+        )
 
     @property
     def has_state_replay(self) -> bool:
-        return self.sim_states is not None
+        return self.sim_states is not None or self.sim_integration_states is not None
 
     @property
     def state_replay_label(self) -> str:
+        if self.sim_integration_states is not None:
+            return "integration state (exact)"
         if self.sim_state_kind == "policy_state":
             return "state (direct)"
         return "qpos (exact)"
@@ -135,12 +144,20 @@ class ReplaySession:
             return 0.0
         return float(self.grid_ts[self.current_frame_idx] - self.grid_ts[0])
 
+    def _qpos_frame_count(self) -> int:
+        if self.sim_integration_states is not None:
+            return len(self.sim_integration_states)
+        if self.sim_states is not None:
+            return len(self.sim_states)
+        return 0
+
     @property
     def total_steps(self) -> int:
-        if self.mode == "qpos" and self.sim_states is not None:
+        if self.mode == "qpos":
+            frame_count = self._qpos_frame_count()
             if self.sim_state_alignment == "post_step":
-                return len(self.sim_states)
-            return max(0, len(self.sim_states) - 1)
+                return frame_count
+            return max(0, frame_count - 1)
         return len(self.actions)
 
     @property
@@ -161,13 +178,11 @@ class ReplaySession:
             self.data = self.env.data
 
     def _apply_qpos_frame(self, frame_idx: int) -> None:
-        if self.sim_states is None or len(self.sim_states) == 0:
-            return
-        if (
-            self.sim_integration_states is not None
-            and self.sim_state_spec is not None
-            and len(self.sim_integration_states) > frame_idx
-        ):
+        if self.sim_integration_states is not None:
+            if self.sim_state_spec is None:
+                raise RuntimeError("Integration-state replay requires a MuJoCo state spec")
+            if len(self.sim_integration_states) <= frame_idx:
+                return
             mujoco.mj_setState(
                 self.model,
                 self.data,
@@ -175,6 +190,8 @@ class ReplaySession:
                 self.sim_state_spec,
             )
             mujoco.mj_forward(self.model, self.data)
+            return
+        if self.sim_states is None or len(self.sim_states) == 0:
             return
         state = self.sim_states[frame_idx]
         if self.sim_state_kind == "policy_state":
@@ -212,7 +229,9 @@ class ReplaySession:
         )
 
     def _apply_initial_scene_state(self) -> None:
-        if self.initial_scene_integration_state is not None and self.sim_state_spec is not None:
+        if self.initial_scene_integration_state is not None:
+            if self.sim_state_spec is None:
+                raise RuntimeError("Initial integration-state replay requires a MuJoCo state spec")
             mujoco.mj_setState(
                 self.model,
                 self.data,
@@ -253,8 +272,7 @@ class ReplaySession:
         if self.mode == "physics" and self._has_initial_scene_state():
             self._apply_initial_scene_state()
         elif (
-            self.sim_states is not None
-            and len(self.sim_states) > 0
+            self._qpos_frame_count() > 0
             and self.sim_state_alignment == "initial"
         ):
             self._apply_qpos_frame(0)
@@ -263,17 +281,18 @@ class ReplaySession:
 
     def step(self) -> bool:
         if self.mode == "qpos":
-            if self.sim_states is None:
+            frame_count = self._qpos_frame_count()
+            if frame_count == 0:
                 return False
             if self.sim_state_alignment == "post_step":
-                if self._step_idx >= len(self.sim_states):
+                if self._step_idx >= frame_count:
                     return False
                 self._apply_qpos_frame(self._step_idx)
                 self._step_idx += 1
                 return True
 
             next_idx = self._step_idx + 1
-            if next_idx >= len(self.sim_states):
+            if next_idx >= frame_count:
                 return False
             self._step_idx = next_idx
             self._apply_qpos_frame(self._step_idx)

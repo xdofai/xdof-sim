@@ -44,6 +44,7 @@ class EpisodeContext:
     scene_source: str | None = None
     raw_sim_integration_states: np.ndarray | None = None
     raw_sim_integration_timestamps: np.ndarray | None = None
+    raw_sim_integration_wallclock_timestamps: np.ndarray | None = None
     raw_sim_state_spec: int | None = None
     raw_sim_ctrls: np.ndarray | None = None
     initial_scene_qpos: np.ndarray | None = None

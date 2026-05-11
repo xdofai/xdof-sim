@@ -10,7 +10,11 @@ from xdof_sim.dataset_export.monitor import serve_monitor, MonitorConfig
 from xdof_sim.dataset_export.metadata import finalize_dataset_metadata
 from xdof_sim.dataset_export.pipeline import export_dataset, export_episode, upload_dataset
 from xdof_sim.dataset_export.s3_pipeline import export_s3_shard, finalize_s3_dataset
-from xdof_sim.dataset_export.types import ExportConfig
+from xdof_sim.dataset_export.types import (
+    DEFAULT_IMAGE_HEIGHT,
+    DEFAULT_IMAGE_WIDTH,
+    ExportConfig,
+)
 
 
 def _add_render_config_args(parser: argparse.ArgumentParser) -> None:
@@ -21,8 +25,8 @@ def _add_render_config_args(parser: argparse.ArgumentParser) -> None:
         default="mjwarp",
         help="Renderer used for sim camera export",
     )
-    parser.add_argument("--img-width", type=int, default=224)
-    parser.add_argument("--img-height", type=int, default=224)
+    parser.add_argument("--img-width", type=int, default=DEFAULT_IMAGE_WIDTH)
+    parser.add_argument("--img-height", type=int, default=DEFAULT_IMAGE_HEIGHT)
     parser.add_argument("--fps", type=float, default=30.0)
     parser.add_argument("--sim-batch-size", type=int, default=32)
     parser.add_argument("--gpu-id", type=int, default=None)

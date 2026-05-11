@@ -22,6 +22,7 @@ from xdof_sim.rendering.replay.timeline import build_replay_timeline
 from xdof_sim.rendering.replay.video import (
     _actions_to_ctrl_batch,
     _infer_physics_substeps_per_action,
+    _qpos_frames_from_integration_states,
     _sample_qpos_frames_for_video,
     collect_physics_rollout_qpos_frames,
 )
@@ -595,6 +596,10 @@ class DatasetEpisodeContextTests(unittest.TestCase):
             integration_state = np.arange(12, dtype=np.float64).reshape(3, 4)
             np.save(episode_dir / "integration_state.npy", integration_state)
             np.save(episode_dir / "integration_state_sim_time.npy", np.array([0.0, 0.1, 0.2], dtype=np.float64))
+            np.save(
+                episode_dir / "integration_state_wallclock.npy",
+                np.array([1_700_000_000.0, 1_700_000_000.1, 1_700_000_000.2], dtype=np.float64),
+            )
 
             load_streams_mock.return_value = (
                 self._fake_delivered_streams(episode_dir),
@@ -622,6 +627,10 @@ class DatasetEpisodeContextTests(unittest.TestCase):
                 context.raw_sim_integration_timestamps,
                 np.array([0.0, 0.1, 0.2], dtype=np.float64),
             )
+            np.testing.assert_allclose(
+                context.raw_sim_integration_wallclock_timestamps,
+                np.array([1_700_000_000.0, 1_700_000_000.1, 1_700_000_000.2], dtype=np.float64),
+            )
             np.testing.assert_allclose(context.initial_scene_integration_state, integration_state[0])
             self.assertEqual(context.raw_sim_state_spec, 16383)
 
@@ -647,6 +656,10 @@ class DatasetEpisodeContextTests(unittest.TestCase):
             raw_sim_timestamps=np.array([1_777_951_600.0, 1_777_951_600.05, 1_777_951_600.15, 1_777_951_600.25]),
             raw_sim_integration_states=np.array([[10.0], [20.0], [30.0], [40.0]], dtype=np.float64),
             raw_sim_integration_timestamps=np.array([132.226, 132.276, 132.376, 132.476], dtype=np.float64),
+            raw_sim_integration_wallclock_timestamps=np.array(
+                [1_777_951_600.0, 1_777_951_600.05, 1_777_951_600.15, 1_777_951_600.25],
+                dtype=np.float64,
+            ),
             raw_sim_state_spec=16383,
         )
 
@@ -733,16 +746,10 @@ class DatasetEpisodeContextTests(unittest.TestCase):
         apply_mock.assert_not_called()
 
     @mock.patch("xdof_sim.make_env", autospec=True)
-    def test_create_replay_env_falls_back_to_randomization_when_scene_xml_fails(self, make_env_mock) -> None:
+    def test_create_replay_env_refuses_randomization_fallback_when_scene_xml_fails(self, make_env_mock) -> None:
         apply_mock = mock.Mock()
-        env = SimpleNamespace(
-            reset=mock.Mock(),
-            model=object(),
-            data=object(),
-            _task_randomizer=SimpleNamespace(apply=apply_mock),
-        )
         rand_state = object()
-        make_env_mock.side_effect = [ValueError("Error opening file 'missing.obj'"), env]
+        make_env_mock.side_effect = ValueError("Error opening file 'missing.obj'")
         context = SimpleNamespace(
             streams=SimpleNamespace(episode_dir=Path("/tmp/episode")),
             scene="hybrid",
@@ -752,16 +759,13 @@ class DatasetEpisodeContextTests(unittest.TestCase):
             physics_overrides=None,
         )
 
-        returned = create_replay_env(context)
+        with self.assertRaisesRegex(ValueError, "missing.obj"):
+            create_replay_env(context)
 
-        self.assertIs(returned, env)
-        self.assertEqual(make_env_mock.call_count, 2)
-        self.assertEqual(make_env_mock.call_args_list[0].kwargs["scene_xml_string"], "<mujoco/>")
-        self.assertIs(make_env_mock.call_args_list[0].kwargs["enable_task_randomizer"], False)
-        self.assertIsNone(make_env_mock.call_args_list[1].kwargs["scene_xml_string"])
-        self.assertIs(make_env_mock.call_args_list[1].kwargs["enable_task_randomizer"], True)
-        env.reset.assert_called_once_with(randomize=False)
-        apply_mock.assert_called_once_with(env.model, env.data, rand_state)
+        self.assertEqual(make_env_mock.call_count, 1)
+        self.assertEqual(make_env_mock.call_args.kwargs["scene_xml_string"], "<mujoco/>")
+        self.assertIs(make_env_mock.call_args.kwargs["enable_task_randomizer"], False)
+        apply_mock.assert_not_called()
 
 
 class DirectActionLoadingTests(unittest.TestCase):
@@ -806,6 +810,73 @@ class DirectActionLoadingTests(unittest.TestCase):
                 ),
             )
             np.testing.assert_allclose(ts, np.array([0.0, 0.1], dtype=np.float64))
+
+    @mock.patch("xdof_sim.rendering.replay.episode._load_direct_topic_positions", autospec=True)
+    def test_load_direct_actions_uses_explicit_action_gripper_topic(
+        self,
+        load_topic_positions_mock,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode_dir = Path(tmpdir)
+            (episode_dir / "action-left.mcap").write_bytes(b"fake")
+
+            def _fake_load(path, *, topic):
+                path = Path(path)
+                if path.name == "action-left.mcap" and topic == "/action-left-robot-state":
+                    return (
+                        np.array([[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]], dtype=np.float64),
+                        np.array([0.0, 0.1], dtype=np.float64),
+                    )
+                if path.name == "action-left.mcap" and topic == "/action-left-gripper-state":
+                    return (
+                        np.array([[0.1], [0.2]], dtype=np.float64),
+                        np.array([0.0, 0.1], dtype=np.float64),
+                    )
+                return None
+
+            load_topic_positions_mock.side_effect = _fake_load
+            actions, ts = _load_direct_actions(episode_dir, "left")
+
+            np.testing.assert_allclose(
+                actions,
+                np.array(
+                    [
+                        [1, 2, 3, 4, 5, 6, 0.1],
+                        [7, 8, 9, 10, 11, 12, 0.2],
+                    ],
+                    dtype=np.float64,
+                ),
+            )
+            np.testing.assert_allclose(ts, np.array([0.0, 0.1], dtype=np.float64))
+
+    @mock.patch("xdof_sim.rendering.replay.episode._load_direct_topic_positions", autospec=True)
+    def test_load_direct_actions_rejects_missing_action_gripper_topic(
+        self,
+        load_topic_positions_mock,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode_dir = Path(tmpdir)
+            (episode_dir / "left.mcap").write_bytes(b"fake")
+            (episode_dir / "action-left.mcap").write_bytes(b"fake")
+
+            def _fake_load(path, *, topic):
+                path = Path(path)
+                if path.name == "action-left.mcap" and topic == "/action-left-robot-state":
+                    return (
+                        np.array([[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]], dtype=np.float64),
+                        np.array([0.0, 0.1], dtype=np.float64),
+                    )
+                if path.name == "left.mcap" and topic in {"/left-robot-state", "/left-gripper-state"}:
+                    return (
+                        np.array([[0.9], [0.8]], dtype=np.float64),
+                        np.array([0.0, 0.1], dtype=np.float64),
+                    )
+                return None
+
+            load_topic_positions_mock.side_effect = _fake_load
+
+            with self.assertRaisesRegex(ValueError, "missing explicit action gripper stream"):
+                _load_direct_actions(episode_dir, "left")
 
     def test_actions_to_ctrl_batch_scales_grippers_and_places_ctrl_indices(self) -> None:
         actions = np.array(
@@ -1151,6 +1222,79 @@ class ReplaySessionStateModeTests(unittest.TestCase):
         np.testing.assert_allclose(mj_set_state_mock.call_args_list[0].args[2], integration_states[0])
         self.assertTrue(session.step())
         np.testing.assert_allclose(mj_set_state_mock.call_args_list[-1].args[2], integration_states[1])
+
+    @mock.patch("xdof_sim.rendering.replay.session.mujoco.mj_forward", autospec=True)
+    @mock.patch("xdof_sim.rendering.replay.session.mujoco.mj_setState", autospec=True)
+    @mock.patch("xdof_sim.rendering.replay.session.mujoco.mj_resetData", autospec=True)
+    def test_qpos_replay_accepts_validated_integration_states_without_raw_qpos(
+        self,
+        _reset_mock,
+        mj_set_state_mock,
+        _forward_mock,
+    ) -> None:
+        env = FakeEnv()
+        integration_states = np.array(
+            [
+                np.arange(6, dtype=np.float64),
+                np.arange(6, dtype=np.float64) + 10.0,
+            ]
+        )
+        session = ReplaySession(
+            env,
+            actions=np.zeros((1, 14), dtype=np.float32),
+            grid_ts=np.array([0.0, 0.1], dtype=np.float64),
+            sim_states=None,
+            sim_integration_states=integration_states,
+            sim_state_spec=16383,
+            mode="auto",
+        )
+
+        self.assertEqual(session.mode, "qpos")
+        self.assertTrue(session.has_exact_qpos)
+        self.assertEqual(session.state_replay_label, "integration state (exact)")
+        np.testing.assert_allclose(mj_set_state_mock.call_args_list[0].args[2], integration_states[0])
+        self.assertTrue(session.step())
+        np.testing.assert_allclose(mj_set_state_mock.call_args_list[-1].args[2], integration_states[1])
+
+    @mock.patch("xdof_sim.rendering.replay.video.mujoco.mj_forward", autospec=True)
+    @mock.patch("xdof_sim.rendering.replay.video.mujoco.mj_setState", autospec=True)
+    def test_batched_qpos_export_materializes_qpos_from_integration_states(
+        self,
+        mj_set_state_mock,
+        _forward_mock,
+    ) -> None:
+        data = SimpleNamespace(qpos=np.zeros(5, dtype=np.float64))
+
+        def _fake_set_state(_model, data_arg, state, _spec):
+            data_arg.qpos[:] = np.array([state[0], state[1], state[2], state[0] + 1.0, 9.0])
+
+        mj_set_state_mock.side_effect = _fake_set_state
+        session = SimpleNamespace(
+            model=SimpleNamespace(nq=5),
+            data=data,
+            sim_state_spec=16383,
+        )
+        integration_states = np.array(
+            [
+                [10.0, 100.0, 1000.0],
+                [20.0, 200.0, 2000.0],
+            ],
+            dtype=np.float64,
+        )
+
+        qpos = _qpos_frames_from_integration_states(session, integration_states)
+
+        np.testing.assert_allclose(
+            qpos,
+            np.array(
+                [
+                    [10.0, 100.0, 1000.0, 11.0, 9.0],
+                    [20.0, 200.0, 2000.0, 21.0, 9.0],
+                ],
+                dtype=np.float32,
+            ),
+        )
+        self.assertEqual(mj_set_state_mock.call_count, 2)
 
     @mock.patch("xdof_sim.rendering.replay.session.mujoco.mj_forward", autospec=True)
     @mock.patch("xdof_sim.rendering.replay.session.mujoco.mj_setState", autospec=True)
