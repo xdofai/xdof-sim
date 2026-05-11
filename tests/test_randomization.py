@@ -339,6 +339,34 @@ class ResetArmPoseTests(unittest.TestCase):
         finally:
             env.close()
 
+    def test_dishrack_scene_reload_preserves_mocap_transform(self) -> None:
+        from xdof_sim.scene_xml import SceneXmlTransformOptions, build_scene_xml
+        from xdof_sim.task_registry import get_task_scene_xml
+
+        transform_options = SceneXmlTransformOptions(clean=True, mocap=True)
+        xml, _ = build_scene_xml(get_task_scene_xml("dishrack"), options=transform_options)
+        env = xdof_sim.make_env(
+            task="dishrack",
+            scene="hybrid",
+            render_cameras=False,
+            scene_xml_string=xml,
+            scene_xml_transform_options=transform_options,
+        )
+        try:
+            env.reset(seed=0, randomize=True)
+
+            self.assertEqual(env.model.nmocap, 2)
+            self.assertGreaterEqual(
+                mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_EQUALITY, "left_mocap_weld"),
+                0,
+            )
+            self.assertGreaterEqual(
+                mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_EQUALITY, "right_mocap_weld"),
+                0,
+            )
+        finally:
+            env.close()
+
 
 class DishRackVariantRandomizationTests(unittest.TestCase):
     def test_removed_dishrack_variant_is_not_enumerated(self) -> None:
@@ -441,6 +469,7 @@ class DishRackVariantRandomizationTests(unittest.TestCase):
         model = mujoco.MjModel.from_xml_string(xml)
 
         self.assertGreaterEqual(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "dishrack"), 0)
+        self.assertGreaterEqual(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "dishrack"), 0)
         self.assertGreaterEqual(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "plate"), 0)
         self.assertIn("dish_rack_0", xml)
         self.assertIn("plate_0", xml)
@@ -456,6 +485,7 @@ class DishRackVariantRandomizationTests(unittest.TestCase):
         model = mujoco.MjModel.from_xml_string(xml)
 
         self.assertGreaterEqual(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "dishrack"), 0)
+        self.assertGreaterEqual(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "dishrack"), 0)
         self.assertGreaterEqual(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "plate"), 0)
         self.assertGreaterEqual(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "plate_joint"), 0)
 
@@ -476,6 +506,7 @@ class DishRackVariantRandomizationTests(unittest.TestCase):
         model = mujoco.MjModel.from_xml_string(xml)
 
         self.assertGreaterEqual(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "dishrack"), 0)
+        self.assertGreaterEqual(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "dishrack"), 0)
         for index in range(len(plate_variants)):
             self.assertGreaterEqual(
                 mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, _dishrack_plate_body_name(index)),
@@ -491,6 +522,7 @@ class DishRackVariantRandomizationTests(unittest.TestCase):
         try:
             self.assertEqual(env._scene_xml.name, "yam_dishrack_base.xml")
             self.assertGreaterEqual(mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_BODY, "dishrack"), 0)
+            self.assertGreaterEqual(mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_JOINT, "dishrack"), 0)
             self.assertGreaterEqual(mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_JOINT, "plate_joint"), 0)
 
             for seed in range(8):

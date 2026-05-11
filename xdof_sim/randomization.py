@@ -917,7 +917,7 @@ class DishRackRandomizer(SceneRandomizer):
     _scene_model_cache_size = 16
     _plate_sample_tries = 64
     perturbations = [
-        PerturbRange("dishrack",    delta_x=(-0.10, 0.09), delta_y=(-0.15, 0.15), delta_yaw=(-0.25, 0.25), fixed_body=True),
+        PerturbRange("dishrack",    delta_x=(-0.10, 0.09), delta_y=(-0.15, 0.15), delta_yaw=(-0.25, 0.25)),
         PerturbRange("plate_joint", delta_x=(-0.35, 0.25), delta_y=(-0.35, 0.35)),
     ]
 
@@ -1171,7 +1171,6 @@ class DishRackRandomizer(SceneRandomizer):
                 delta_x=(-0.10, 0.09),
                 delta_y=(-0.15, 0.15),
                 delta_yaw=(-0.25, 0.25),
-                fixed_body=True,
             ),
             *[
                 PerturbRange(
@@ -1402,6 +1401,7 @@ class DishRackRandomizer(SceneRandomizer):
 
         base_scene_xml = self._base_scene_xml_string
         base_scene_dir = self._base_scene_xml_dir
+        base_scene_transformed = self._base_scene_xml_transformed
         if not self._try_reload_cached_scene_model(scene_cache_key):
             if (
                 base_scene_xml is None
@@ -1410,6 +1410,7 @@ class DishRackRandomizer(SceneRandomizer):
             ):
                 base_scene_xml = _DISHRACK_BASE_SCENE_XML.read_text()
                 base_scene_dir = _DISHRACK_BASE_SCENE_XML.parent
+                base_scene_transformed = False
 
             xml = _build_dishrack_scene_xml(
                 dish_rack_variant=dish_rack_variant,
@@ -1418,7 +1419,7 @@ class DishRackRandomizer(SceneRandomizer):
                 base_scene_xml=base_scene_xml,
                 base_scene_dir=base_scene_dir,
             )
-            if self._scene_xml_transform_options is not None and not self._base_scene_xml_transformed:
+            if self._scene_xml_transform_options is not None and not base_scene_transformed:
                 from xdof_sim.scene_xml import transform_scene_xml
 
                 xml, _ = transform_scene_xml(xml, options=self._scene_xml_transform_options)
@@ -3654,7 +3655,7 @@ def _build_dishrack_scene_xml(
         variant_name=dish_rack_variant,
         scale_factor=float(scale_states.get("dishrack", 1.0)),
         object_name="dishrack",
-        joint_name=None,
+        joint_name="dishrack",
         instance_index=0,
     )
     task_assets = list(rack_assets)

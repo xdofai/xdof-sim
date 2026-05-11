@@ -171,7 +171,7 @@ warning and keeps the last sampled placement anyway.
 
 #### Dish rack
 
-- Randomized as fixed body `dishrack`
+- Randomized as free-jointed `dishrack`
 - `delta_x = [-0.10, 0.09]`
 - `delta_y = [-0.15, 0.15]`
 - `delta_yaw = [-0.25, 0.25]`
