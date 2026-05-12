@@ -746,8 +746,8 @@ class WaterBottleVariantRandomizationTests(unittest.TestCase):
                 self.assertEqual(set(state.scale_states), set(state.object_states))
                 for joint_name, scale in state.scale_states.items():
                     if joint_name == "bin_joint":
-                        self.assertGreaterEqual(scale, 0.80)
-                        self.assertLessEqual(scale, 1.20)
+                        self.assertGreaterEqual(scale, 1.00)
+                        self.assertLessEqual(scale, 1.40)
                         continue
                     self.assertGreaterEqual(scale, 0.90)
                     self.assertLessEqual(scale, 1.10)

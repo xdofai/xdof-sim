@@ -964,7 +964,7 @@ class WaterBottleRandomizer(SceneRandomizer):
     min_bottle_count = 2
     max_bottle_count = 6
     bottle_scale_factor = (0.90, 1.10)
-    bin_scale_factor = (0.80, 1.20)
+    bin_scale_factor = (1.00, 1.40)
     table_edge_bounds: tuple[float, float, float, float] = (
         0.3025,
         0.8975,
