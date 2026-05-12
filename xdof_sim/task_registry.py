@@ -37,6 +37,7 @@ class ResolvedTask:
 
 _SCENE_TASKS: tuple[SceneTaskSpec, ...] = (
     SceneTaskSpec(name="bottles", scene_xml=_MODELS_DIR / "yam_bottles_scene.xml"),
+    SceneTaskSpec(name="put_bottles", scene_xml=_MODELS_DIR / "yam_put_bottles_scene.xml"),
     SceneTaskSpec(name="marker", scene_xml=_MODELS_DIR / "yam_marker_scene.xml"),
     SceneTaskSpec(name="ball_sorting", scene_xml=_MODELS_DIR / "yam_ball_sorting_scene.xml"),
     SceneTaskSpec(name="empty", scene_xml=_MODELS_DIR / "yam_bimanual_empty.xml"),
@@ -64,6 +65,9 @@ _SCENE_TASKS: tuple[SceneTaskSpec, ...] = (
 )
 
 _SCENE_TASK_LOOKUP = {spec.name: spec for spec in _SCENE_TASKS}
+_SCENE_TASK_ALIASES = {
+    "water_bottles": "put_bottles",
+}
 
 SCENE_XMLS: dict[str, Path] = {
     spec.name: spec.scene_xml
@@ -93,12 +97,12 @@ def resolve_env_task_name(task: str | SimTaskSpec | None) -> str | None:
     if task is None:
         return None
     if isinstance(task, SimTaskSpec):
-        return task.env_task
+        return _SCENE_TASK_ALIASES.get(task.env_task, task.env_task)
 
     spec = maybe_get_task_spec(task)
     if spec is not None:
-        return spec.env_task
-    return task
+        return _SCENE_TASK_ALIASES.get(spec.env_task, spec.env_task)
+    return _SCENE_TASK_ALIASES.get(task, task)
 
 
 def maybe_get_scene_task_spec(task: str | SimTaskSpec | None) -> SceneTaskSpec | None:

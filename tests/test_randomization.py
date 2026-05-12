@@ -11,8 +11,10 @@ import xdof_sim
 from xdof_sim.randomization import (
     DishRackRandomizer,
     SweepRandomizer,
+    WaterBottleRandomizer,
     _build_dishrack_scene_xml,
     _build_mug_scene_xml,
+    _build_water_bottle_scene_xml,
     _dishrack_geom_world_bounds,
     _dishrack_plate_body_name,
     _dishrack_plate_joint_name,
@@ -22,6 +24,7 @@ from xdof_sim.randomization import (
     _MUG_FLIP_TRAY_INNER_HALF_XY,
     _mug_plain_color_material_names,
     _mug_variant_names,
+    _water_bottle_variant_names,
 )
 from xdof_sim.env import project_policy_state
 
@@ -122,6 +125,61 @@ def _has_mug_tree_contact(model: mujoco.MjModel, data: mujoco.MjData) -> bool:
         ):
             return True
     return False
+
+
+def _has_bottle_bottle_contact(model: mujoco.MjModel, data: mujoco.MjData, bottle_count: int) -> bool:
+    bottle_roots: set[int] = set()
+    for index in range(1, bottle_count + 1):
+        body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"bottle_{index}")
+        if body_id >= 0:
+            bottle_roots.add(int(model.body_rootid[body_id]))
+
+    for contact_index in range(data.ncon):
+        contact = data.contact[contact_index]
+        root_1 = int(model.body_rootid[int(model.geom_bodyid[contact.geom1])])
+        root_2 = int(model.body_rootid[int(model.geom_bodyid[contact.geom2])])
+        if root_1 != root_2 and root_1 in bottle_roots and root_2 in bottle_roots:
+            return True
+    return False
+
+
+def _has_bottle_bin_contact(model: mujoco.MjModel, data: mujoco.MjData, bottle_count: int) -> bool:
+    bin_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "bin_container")
+    if bin_body_id < 0:
+        return False
+    bin_root = int(model.body_rootid[bin_body_id])
+
+    bottle_roots: set[int] = set()
+    for index in range(1, bottle_count + 1):
+        body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"bottle_{index}")
+        if body_id >= 0:
+            bottle_roots.add(int(model.body_rootid[body_id]))
+
+    for contact_index in range(data.ncon):
+        contact = data.contact[contact_index]
+        root_1 = int(model.body_rootid[int(model.geom_bodyid[contact.geom1])])
+        root_2 = int(model.body_rootid[int(model.geom_bodyid[contact.geom2])])
+        if (
+            root_1 in bottle_roots
+            and root_2 == bin_root
+        ) or (
+            root_2 in bottle_roots
+            and root_1 == bin_root
+        ):
+            return True
+    return False
+
+
+def _rotated_local_z_axis(quat: list[float]) -> np.ndarray:
+    w, x, y, z = np.asarray(quat, dtype=np.float64)
+    return np.array(
+        [
+            2.0 * (x * z + w * y),
+            2.0 * (y * z - w * x),
+            1.0 - 2.0 * (x * x + y * y),
+        ],
+        dtype=np.float64,
+    )
 
 
 class SweepRandomizerTests(unittest.TestCase):
@@ -555,6 +613,219 @@ class DishRackVariantRandomizationTests(unittest.TestCase):
                         mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_JOINT, _dishrack_plate_joint_name(index)),
                         0,
                     )
+        finally:
+            env.close()
+
+
+class WaterBottleVariantRandomizationTests(unittest.TestCase):
+    def test_water_bottle_variant_names_include_combined_robocasa_assets(self) -> None:
+        variants = _water_bottle_variant_names()
+        self.assertEqual(variants[0], "bottle_0")
+        self.assertEqual(len(variants), 19)
+        self.assertIn("bottle_18", variants)
+
+    def test_build_water_bottle_scene_xml_supports_variable_bottle_count(self) -> None:
+        variants = _water_bottle_variant_names()
+        for bottle_count in (2, 6):
+            bottle_variants = variants[:bottle_count]
+            xml = _build_water_bottle_scene_xml(
+                bottle_variants=bottle_variants,
+                scale_states={
+                    f"bottle_{index}_joint": 1.0
+                    for index in range(1, bottle_count + 1)
+                },
+                base_scene_xml=None,
+                base_scene_dir=None,
+            )
+            model = mujoco.MjModel.from_xml_string(xml)
+
+            self.assertGreaterEqual(
+                mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "bin_container"),
+                0,
+            )
+            self.assertGreaterEqual(
+                mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "bin_joint"),
+                0,
+            )
+            for index in range(1, bottle_count + 1):
+                self.assertGreaterEqual(
+                    mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"bottle_{index}"),
+                    0,
+                )
+                self.assertGreaterEqual(
+                    mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"bottle_{index}_joint"),
+                    0,
+                )
+
+            self.assertLess(
+                mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"bottle_{bottle_count + 1}"),
+                0,
+            )
+
+    def test_water_bottle_variants_have_consistent_mass_and_contact_params(self) -> None:
+        for variant_name in _water_bottle_variant_names():
+            xml = _build_water_bottle_scene_xml(
+                bottle_variants=[variant_name, variant_name],
+                scale_states={},
+                base_scene_xml=None,
+                base_scene_dir=None,
+            )
+            model = mujoco.MjModel.from_xml_string(xml)
+            data = mujoco.MjData(model)
+            mujoco.mj_forward(model, data)
+
+            bottle_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "bottle_1")
+            nonzero_body_ids = [
+                body_id
+                for body_id in range(model.nbody)
+                if _body_in_subtree(model, body_id, bottle_body_id)
+                and float(model.body_mass[body_id]) > 0.0
+            ]
+            self.assertEqual(len(nonzero_body_ids), 1, msg=variant_name)
+            body_id = nonzero_body_ids[0]
+            self.assertAlmostEqual(float(model.body_mass[body_id]), 0.05, places=6, msg=variant_name)
+            self.assertGreater(float(model.body_inertia[body_id][0]), 9.0e-5, msg=variant_name)
+            self.assertGreater(float(model.body_inertia[body_id][1]), 9.0e-5, msg=variant_name)
+            self.assertGreater(float(model.body_inertia[body_id][2]), 1.3e-5, msg=variant_name)
+
+            collision_geom_ids = [
+                geom_id
+                for geom_id in range(model.ngeom)
+                if _body_in_subtree(model, int(model.geom_bodyid[geom_id]), bottle_body_id)
+                and int(model.geom_group[geom_id]) == 3
+            ]
+            self.assertGreater(len(collision_geom_ids), 0, msg=variant_name)
+            self.assertEqual(
+                {
+                    tuple(float(value) for value in model.geom_friction[geom_id])
+                    for geom_id in collision_geom_ids
+                },
+                {(3.0, 0.03, 0.003)},
+                msg=variant_name,
+            )
+            self.assertEqual(
+                {int(model.geom_condim[geom_id]) for geom_id in collision_geom_ids},
+                {6},
+                msg=variant_name,
+            )
+            self.assertEqual(
+                {int(model.geom_priority[geom_id]) for geom_id in collision_geom_ids},
+                {1},
+                msg=variant_name,
+            )
+
+    def test_make_env_randomizes_water_bottle_count_variants_scales_and_contacts(self) -> None:
+        env = xdof_sim.make_env(task="put_bottles", render_cameras=False)
+        try:
+            observed_counts: set[int] = set()
+            observed_independent_sample = False
+            observed_bin_positions: set[tuple[float, float]] = set()
+            observed_bin_colors: set[tuple[float, float, float, float]] = set()
+            observed_bin_scales: set[float] = set()
+            for seed in range(6):
+                env.reset(seed=seed, randomize=True)
+                state = env._last_randomization
+                self.assertIsNotNone(state)
+                assert state is not None
+
+                bottle_count = int(state.metadata["bottle_count"])
+                bottle_variants = list(state.metadata["bottle_variants"])
+                observed_counts.add(bottle_count)
+                observed_independent_sample = observed_independent_sample or len(set(bottle_variants)) > 1
+
+                self.assertGreaterEqual(bottle_count, WaterBottleRandomizer.min_bottle_count)
+                self.assertLessEqual(bottle_count, WaterBottleRandomizer.max_bottle_count)
+                self.assertEqual(len(bottle_variants), bottle_count)
+                self.assertEqual(
+                    set(state.object_states),
+                    {
+                        *(f"bottle_{index}_joint" for index in range(1, bottle_count + 1)),
+                        "bin_joint",
+                    },
+                )
+                self.assertEqual(set(state.scale_states), set(state.object_states))
+                for joint_name, scale in state.scale_states.items():
+                    if joint_name == "bin_joint":
+                        self.assertGreaterEqual(scale, 0.80)
+                        self.assertLessEqual(scale, 1.20)
+                        continue
+                    self.assertGreaterEqual(scale, 0.90)
+                    self.assertLessEqual(scale, 1.10)
+                self.assertIn("bin_color", state.metadata)
+                self.assertEqual(len(state.metadata["bin_color"]), 4)
+                self.assertGreater(float(state.object_states["bin_joint"]["pos"][2]), 0.75)
+                observed_bin_positions.add(
+                    tuple(round(float(value), 3) for value in state.object_states["bin_joint"]["pos"][:2])
+                )
+                observed_bin_colors.add(tuple(float(value) for value in state.metadata["bin_color"]))
+                observed_bin_scales.add(round(float(state.scale_states["bin_joint"]), 3))
+                for joint_name, object_state in state.object_states.items():
+                    if joint_name == "bin_joint":
+                        continue
+                    long_axis = _rotated_local_z_axis(object_state["quat"])
+                    self.assertLess(abs(float(long_axis[2])), 1.0e-6)
+                    self.assertGreater(float(object_state["pos"][2]), 0.75)
+
+                self.assertFalse(_has_bottle_bottle_contact(env.model, env.data, bottle_count))
+                self.assertFalse(_has_bottle_bin_contact(env.model, env.data, bottle_count))
+
+            self.assertGreaterEqual(len(observed_counts), 2)
+            self.assertTrue(observed_independent_sample)
+            self.assertGreaterEqual(len(observed_bin_positions), 2)
+            self.assertGreaterEqual(len(observed_bin_colors), 2)
+            self.assertGreaterEqual(len(observed_bin_scales), 2)
+        finally:
+            env.close()
+
+    def test_water_bottle_asset_debug_cycles_pinned_bottle_variant(self) -> None:
+        env = xdof_sim.make_env(task="put_bottles", render_cameras=False)
+        try:
+            options = {
+                "randomization": {
+                    "randomize_variants": False,
+                    "randomize_scales": False,
+                }
+            }
+            env.reset(seed=1, randomize=True, options=options)
+            state = env._last_randomization
+            self.assertIsNotNone(state)
+            assert state is not None
+            self.assertEqual(state.metadata["bottle_variants"], ["bottle_0", "bottle_0"])
+            self.assertEqual(state.scale_states, {})
+
+            env.reset(
+                seed=2,
+                randomize=True,
+                options={
+                    "randomization": {
+                        "randomize_variants": False,
+                        "randomize_scales": False,
+                        "cycle_bottle": 1,
+                    }
+                },
+            )
+            state = env._last_randomization
+            self.assertIsNotNone(state)
+            assert state is not None
+            self.assertEqual(state.metadata["bottle_variants"], ["bottle_1", "bottle_1"])
+            self.assertEqual(state.scale_states, {})
+
+            env.reset(
+                seed=3,
+                randomize=True,
+                options={
+                    "randomization": {
+                        "randomize_variants": False,
+                        "randomize_scales": False,
+                        "cycle_bottle": -1,
+                    }
+                },
+            )
+            state = env._last_randomization
+            self.assertIsNotNone(state)
+            assert state is not None
+            self.assertEqual(state.metadata["bottle_variants"], ["bottle_0", "bottle_0"])
+            self.assertEqual(state.scale_states, {})
         finally:
             env.close()
 

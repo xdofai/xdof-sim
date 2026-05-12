@@ -25,6 +25,14 @@ class TaskRegistryTests(unittest.TestCase):
         self.assertEqual(resolve_env_task_name("put_markers_in_top_drawer"), "drawer")
         self.assertEqual(get_task_scene_xml("put_markers_in_top_drawer"), get_task_scene_xml("drawer"))
 
+    def test_put_bottles_scene_task_is_registered(self) -> None:
+        spec = maybe_get_scene_task_spec("put_bottles")
+        self.assertIsNotNone(spec)
+        assert spec is not None
+        self.assertEqual(spec.scene_xml.name, "yam_put_bottles_scene.xml")
+        self.assertEqual(resolve_env_task_name("water_bottles"), "put_bottles")
+        self.assertEqual(maybe_get_scene_task_spec("water_bottles"), spec)
+
     def test_make_env_accepts_prompt_alias_task_names(self) -> None:
         env = xdof_sim.make_env(task="throw plastic bottles in bin", render_cameras=False)
         try:

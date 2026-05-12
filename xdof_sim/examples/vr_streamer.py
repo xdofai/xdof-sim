@@ -711,9 +711,27 @@ let streamBodyMap = {};
 let sceneVersion = 0;
 let resetRequestPending = false;
 
+function isPutBottlesDebugTask() {
+  const task = window.__ASSET_DEBUG_TASK__;
+  return task === 'put_bottles' || task === 'water_bottles';
+}
+
 function updateAssetInfo(randomization) {
   if (!window.__ASSET_DEBUG__) {
     assetInfo.style.display = 'none';
+    return;
+  }
+  const task = window.__ASSET_DEBUG_TASK__ || 'dishrack';
+  if (isPutBottlesDebugTask()) {
+    const bottle = randomization?.bottle_variant || '?';
+    const bottleCount = randomization?.bottle_count ?? '?';
+    const bottleVariants = Array.isArray(randomization?.bottle_variants) && randomization.bottle_variants.length
+      ? randomization.bottle_variants.join(', ')
+      : bottle;
+    const binScale = randomization?.bin_scale ?? '?';
+    assetInfo.style.display = 'block';
+    assetInfo.textContent =
+      `Bottles (${bottleCount}): ${bottleVariants}\nBin scale: ${binScale}\nX: next bottle\nY: previous bottle\nB/Space: reset`;
     return;
   }
   const plate = randomization?.plate_variant || '?';
@@ -1071,12 +1089,20 @@ window.addEventListener('keydown', (event) => {
   if (!window.__ASSET_DEBUG__) return;
   if (event.code === 'KeyX') {
     event.preventDefault();
-    requestSceneReset('keyboard_x', assetDebugRequest({ cycle_plate: 1 }));
+    if (isPutBottlesDebugTask()) {
+      requestSceneReset('keyboard_x', assetDebugRequest({ cycle_bottle: 1 }));
+    } else {
+      requestSceneReset('keyboard_x', assetDebugRequest({ cycle_plate: 1 }));
+    }
     return;
   }
   if (event.code === 'KeyY') {
     event.preventDefault();
-    requestSceneReset('keyboard_y', assetDebugRequest({ cycle_dish_rack: 1 }));
+    if (isPutBottlesDebugTask()) {
+      requestSceneReset('keyboard_y', assetDebugRequest({ cycle_bottle: -1 }));
+    } else {
+      requestSceneReset('keyboard_y', assetDebugRequest({ cycle_dish_rack: 1 }));
+    }
   }
 });
 
@@ -1164,13 +1190,21 @@ renderer.setAnimationLoop(() => {
   if (window.__ASSET_DEBUG__) {
     const leftXPressed = getFaceButton('left', 4);
     if (leftXPressed && !faceButtonHeld.leftX) {
-      requestSceneReset('controller_x', assetDebugRequest({ cycle_plate: 1 }));
+      if (isPutBottlesDebugTask()) {
+        requestSceneReset('controller_x', assetDebugRequest({ cycle_bottle: 1 }));
+      } else {
+        requestSceneReset('controller_x', assetDebugRequest({ cycle_plate: 1 }));
+      }
     }
     faceButtonHeld.leftX = leftXPressed;
 
     const leftYPressed = getFaceButton('left', 5);
     if (leftYPressed && !faceButtonHeld.leftY) {
-      requestSceneReset('controller_y', assetDebugRequest({ cycle_dish_rack: 1 }));
+      if (isPutBottlesDebugTask()) {
+        requestSceneReset('controller_y', assetDebugRequest({ cycle_bottle: -1 }));
+      } else {
+        requestSceneReset('controller_y', assetDebugRequest({ cycle_dish_rack: 1 }));
+      }
     }
     faceButtonHeld.leftY = leftYPressed;
   }
@@ -1225,7 +1259,7 @@ async function updateRecLight() {
 def main():
     parser = argparse.ArgumentParser(description="Lightweight VR streaming teleop")
     parser.add_argument("--task", type=str, default="blocks",
-                        choices=["bottles", "marker", "ball_sorting", "empty",
+                        choices=["bottles", "put_bottles", "marker", "ball_sorting", "empty",
                                  "dishrack", "chess", "blocks",
                                  "mug_tree", "mug_flip", "jenga", "building_blocks", "sweep", "drawer", "pour",
                                  "inhand_transfer"])
@@ -1267,8 +1301,8 @@ def main():
         "--asset-debug",
         action="store_true",
         help=(
-            "Dishrack-only debug mode: keep asset variants pinned on reset and map "
-            "X/Y to cycle plate and rack variants."
+            "Asset debug mode for dishrack/put_bottles: keep variants pinned on reset "
+            "and map X/Y to cycle task asset variants."
         ),
     )
     parser.add_argument(
@@ -1282,8 +1316,8 @@ def main():
         visible_groups = set(_parse_visible_groups_arg(args.visible_groups))
     except ValueError as exc:
         parser.error(str(exc))
-    if args.asset_debug and args.task != "dishrack":
-        parser.error("--asset-debug is currently only supported for task='dishrack'")
+    if args.asset_debug and args.task not in {"dishrack", "put_bottles"}:
+        parser.error("--asset-debug is currently only supported for task='dishrack' or task='put_bottles'")
 
     if args.record_dir and args.mocap:
         raise SystemExit("--record-dir is only supported in GELLO mode, not --mocap mode")
@@ -1533,20 +1567,41 @@ def main():
         metadata = getattr(randomization_state, "metadata", None)
         if not isinstance(metadata, dict):
             return None
+        scale_states = getattr(randomization_state, "scale_states", {})
+        if not isinstance(scale_states, dict):
+            scale_states = {}
 
         plate_variant = metadata.get("plate_variant")
         plate_variants = metadata.get("plate_variants")
         plate_count = metadata.get("plate_count")
         dish_rack_variant = metadata.get("dish_rack_variant")
         trash_count = metadata.get("trash_count")
-        if plate_variant is None and dish_rack_variant is None and plate_count is None and trash_count is None:
+        bottle_variant = metadata.get("bottle_variant")
+        bottle_variants = metadata.get("bottle_variants")
+        bottle_count = metadata.get("bottle_count")
+        if (
+            plate_variant is None
+            and dish_rack_variant is None
+            and plate_count is None
+            and trash_count is None
+            and bottle_variant is None
+            and bottle_count is None
+        ):
             return None
         payload = {
             "plate_variant": str(plate_variant or ""),
             "plate_variants": [str(value) for value in plate_variants] if isinstance(plate_variants, (list, tuple)) else [],
             "plate_count": int(plate_count) if plate_count is not None else None,
             "dish_rack_variant": str(dish_rack_variant or ""),
+            "bottle_variant": str(bottle_variant or ""),
+            "bottle_variants": [str(value) for value in bottle_variants] if isinstance(bottle_variants, (list, tuple)) else [],
+            "bottle_count": int(bottle_count) if bottle_count is not None else None,
         }
+        bin_scale = scale_states.get("bin_joint")
+        if bin_scale is not None:
+            payload["bin_scale"] = round(float(bin_scale), 3)
+        elif bottle_variant is not None or bottle_count is not None:
+            payload["bin_scale"] = 1.0
         if trash_count is not None:
             payload["trash_count"] = int(trash_count)
         return payload
@@ -1704,6 +1759,7 @@ def main():
         config_script += f'window.__VR_TARGET__ = {args.vr_target};'
         if args.asset_debug:
             config_script += 'window.__ASSET_DEBUG__ = true;'
+            config_script += f'window.__ASSET_DEBUG_TASK__ = {json.dumps(args.task)};'
             config_script += (
                 f'window.__ASSET_DEBUG_STATE__ = {json.dumps(current_randomization_metadata())};'
             )

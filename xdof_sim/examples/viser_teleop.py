@@ -606,7 +606,7 @@ def main():
         "--task",
         type=str,
         default="bottles",
-        choices=["bottles", "marker", "pour", "drawer", "ball_sorting", "empty", "dishrack", "chess", "chess2", "blocks", "mug_tree", "mug_flip"],
+        choices=["bottles", "put_bottles", "marker", "pour", "drawer", "ball_sorting", "empty", "dishrack", "chess", "chess2", "blocks", "mug_tree", "mug_flip"],
         help="Task scene (default: bottles)",
     )
     parser.add_argument(

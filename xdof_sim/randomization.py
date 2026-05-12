@@ -204,6 +204,58 @@ class MugResetRequest:
 
 
 @dataclass(frozen=True)
+class WaterBottleResetRequest:
+    """Optional reset controls for the RoboCasa water-bottle randomizer."""
+
+    bottle_variant: str | None = None
+    bottle_variants: tuple[str, ...] | None = None
+    bottle_count: int | None = None
+    cycle_bottle: int = 0
+    randomize_variants: bool | None = None
+    randomize_scales: bool | None = None
+
+    @classmethod
+    def from_value(cls, value: Any | None) -> "WaterBottleResetRequest":
+        if value is None:
+            return cls()
+        if isinstance(value, cls):
+            return value
+        if not isinstance(value, dict):
+            raise TypeError(
+                "WaterBottle reset request must be a dict or WaterBottleResetRequest, "
+                f"got {type(value).__name__}"
+            )
+
+        raw_variant = value.get("bottle_variant")
+        raw_variants = value.get("bottle_variants")
+        if raw_variants is None:
+            bottle_variants = None
+        elif isinstance(raw_variants, str):
+            bottle_variants = (raw_variants,)
+        else:
+            bottle_variants = tuple(str(variant) for variant in raw_variants)
+
+        randomize_variants = value.get("randomize_variants")
+        if randomize_variants is not None:
+            randomize_variants = bool(randomize_variants)
+
+        randomize_scales = value.get("randomize_scales")
+        if randomize_scales is not None:
+            randomize_scales = bool(randomize_scales)
+
+        raw_count = value.get("bottle_count")
+        raw_cycle = value.get("cycle_bottle", 0)
+        return cls(
+            bottle_variant=None if raw_variant is None else str(raw_variant),
+            bottle_variants=bottle_variants,
+            bottle_count=None if raw_count is None else int(raw_count),
+            cycle_bottle=0 if raw_cycle is None else int(raw_cycle),
+            randomize_variants=randomize_variants,
+            randomize_scales=randomize_scales,
+        )
+
+
+@dataclass(frozen=True)
 class SweepResetRequest:
     """Optional reset controls for the sweep randomizer."""
 
@@ -233,6 +285,10 @@ class SweepResetRequest:
 
 class _SweepPlacementFailure(RuntimeError):
     """Internal signal that one sweep placement attempt should be retried."""
+
+
+class _WaterBottlePlacementFailure(RuntimeError):
+    """Internal signal that one water-bottle placement attempt should be retried."""
 
 
 # ---------------------------------------------------------------------------
@@ -857,6 +913,16 @@ _TRAY_COLOR_PALETTE: list[tuple[float, float, float, float]] = [
     (0.880, 0.900, 0.880, 1.0),  # light gray
 ]
 
+_WATER_BOTTLE_BIN_COLOR_PALETTE: list[tuple[float, float, float, float]] = [
+    (0.100, 0.100, 0.250, 1.0),  # original navy
+    (0.950, 0.420, 0.120, 1.0),  # orange
+    (0.080, 0.500, 0.360, 1.0),  # green
+    (0.610, 0.200, 0.760, 1.0),  # purple
+    (0.820, 0.130, 0.180, 1.0),  # red
+    (0.160, 0.170, 0.180, 1.0),  # charcoal
+    (0.870, 0.890, 0.860, 1.0),  # light gray
+]
+
 # Probability of applying a random color (vs. keeping the XML default) each episode.
 _COLOR_RANDOMIZE_PROB = 1.0
 
@@ -890,6 +956,693 @@ class BottlesRandomizer(SceneRandomizer):
         PerturbRange("bin_joint", delta_x=(-0.05, 0.03), delta_y=(-0.2, 0.2),
                      delta_yaw=(-0.5, 0.5)),
     ]
+
+
+class WaterBottleRandomizer(SceneRandomizer):
+    """Randomizer for the RoboCasa mesh water-bottle scene."""
+
+    min_bottle_count = 2
+    max_bottle_count = 6
+    bottle_scale_factor = (0.90, 1.10)
+    bin_scale_factor = (0.80, 1.20)
+    table_edge_bounds: tuple[float, float, float, float] = (
+        0.3025,
+        0.8975,
+        -0.65,
+        0.65,
+    )
+    table_margin_m = 0.015
+    bottle_margin_m = 0.010
+    bin_margin_m = 0.020
+    max_tries = 300
+    _scene_model_cache_size = 12
+    _bottle_sample_tries = 128
+    _bin_footprint_half_xy = (0.105, 0.105)
+    _bin_body_to_bottom_z = 0.084
+    _bin_perturbation = PerturbRange(
+        "bin_joint",
+        delta_x=(-0.08, 0.08),
+        delta_y=(-0.25, 0.25),
+        delta_yaw=(-0.75, 0.75),
+    )
+    _bottle_perturbations = [
+        PerturbRange(
+            f"bottle_{index}_joint",
+            delta_x=(-1.0, 1.0),
+            delta_y=(-1.0, 1.0),
+            delta_yaw=(-np.pi, np.pi),
+        )
+        for index in range(1, 7)
+    ]
+    perturbations = [*_bottle_perturbations[:min_bottle_count], _bin_perturbation]
+
+    def prepare_env(self) -> None:
+        self._compiled_scene_model_cache: OrderedDict[tuple[Any, ...], mujoco.MjModel] = OrderedDict()
+        self._current_bottle_variants = [_WATER_BOTTLE_DEFAULT_VARIANT] * self.min_bottle_count
+        self._current_active_bottle_count = self.min_bottle_count
+        self._set_active_bottle_count(self.min_bottle_count)
+        self._reload_bottle_variant_scene(self._current_bottle_variants, {})
+
+    def _get_size_perturbations(self) -> list[ScalePerturbRange]:
+        active_count = int(getattr(self, "_current_active_bottle_count", self.min_bottle_count))
+        return [
+            *[
+                ScalePerturbRange(perturbation.joint_name, scale_factor=self.bottle_scale_factor)
+                for perturbation in self._bottle_perturbations[:active_count]
+            ],
+            ScalePerturbRange(self._bin_perturbation.joint_name, scale_factor=self.bin_scale_factor),
+        ]
+
+    def randomize(
+        self,
+        model: Any,
+        data: Any,
+        seed: int | None = None,
+        request: Any | None = None,
+    ) -> RandomizationState:
+        rng = np.random.default_rng(seed)
+        reset_request = WaterBottleResetRequest.from_value(request)
+        bottle_variants = self._resolve_bottle_variants(rng, reset_request)
+        self._set_active_bottle_count(len(bottle_variants))
+        should_randomize_scales = (
+            True if reset_request.randomize_scales is None else bool(reset_request.randomize_scales)
+        )
+        scale_states = self._sample_scale_states(rng) if should_randomize_scales else {}
+        self._current_scale_states = dict(scale_states)
+        self._reload_bottle_variant_scene(bottle_variants, scale_states)
+
+        if self._env_ref is not None:
+            model = self._env_ref.model
+            data = self._env_ref.data
+
+        metadata = {
+            "bottle_variant": bottle_variants[0],
+            "bottle_variants": list(bottle_variants),
+            "bottle_count": len(bottle_variants),
+        }
+        state = self._randomize_pose_with_rng(
+            model=model,
+            data=data,
+            seed=seed,
+            rng=rng,
+            scale_states=scale_states,
+            metadata=metadata,
+        )
+        self._sample_and_apply_bin_color(model, state, rng)
+        return state
+
+    def apply(self, model: Any, data: Any, state: RandomizationState) -> None:
+        bottle_variants = self._bottle_variants_from_state(state)
+        self._set_active_bottle_count(len(bottle_variants))
+        self._current_scale_states = dict(state.scale_states)
+        self._reload_bottle_variant_scene(bottle_variants, state.scale_states)
+        if self._env_ref is not None:
+            model = self._env_ref.model
+            data = self._env_ref.data
+        self._apply_states(model, data, state.object_states)
+        mujoco.mj_forward(model, data)
+        self._apply_bin_color(model, state.metadata.get("bin_color"))
+
+    def _resolve_bottle_variants(
+        self,
+        rng: np.random.Generator,
+        request: WaterBottleResetRequest,
+    ) -> list[str]:
+        variants = _water_bottle_variant_names()
+        active_count = self._resolve_bottle_count(rng, request)
+        randomize_variants = request.randomize_variants
+        if randomize_variants is None:
+            randomize_variants = not any(
+                (
+                    request.bottle_variant is not None,
+                    request.bottle_variants is not None,
+                    request.cycle_bottle != 0,
+                )
+            )
+
+        if request.bottle_variants is not None:
+            requested = [_water_bottle_canonical_variant_name(variant) for variant in request.bottle_variants]
+            invalid = [variant for variant in requested if variant not in variants]
+            if invalid:
+                raise ValueError(
+                    f"Unknown water bottle variants {invalid}. Available: {', '.join(variants)}"
+                )
+            if request.bottle_count is not None and int(request.bottle_count) != len(requested):
+                raise ValueError(
+                    f"bottle_count={request.bottle_count} does not match "
+                    f"{len(requested)} bottle_variants"
+            )
+            self._validate_bottle_count(len(requested))
+            return requested
+
+        if request.bottle_variant is not None or request.cycle_bottle != 0:
+            if request.bottle_variant is not None:
+                explicit_variant = _water_bottle_canonical_variant_name(request.bottle_variant)
+                if explicit_variant not in variants:
+                    raise ValueError(
+                        f"Unknown water bottle variant {explicit_variant!r}. Available: {', '.join(variants)}"
+                    )
+            else:
+                current_variants = list(
+                    getattr(
+                        self,
+                        "_current_bottle_variants",
+                        [_WATER_BOTTLE_DEFAULT_VARIANT],
+                    )
+                )
+                current_variant = current_variants[0] if current_variants else _WATER_BOTTLE_DEFAULT_VARIANT
+                if current_variant not in variants:
+                    current_variant = variants[0]
+                explicit_variant = variants[(variants.index(current_variant) + request.cycle_bottle) % len(variants)]
+            return [explicit_variant] * active_count
+
+        if not randomize_variants:
+            current_variants = list(
+                getattr(
+                    self,
+                    "_current_bottle_variants",
+                    [_WATER_BOTTLE_DEFAULT_VARIANT] * active_count,
+                )
+            )
+            if not current_variants:
+                current_variants = [_WATER_BOTTLE_DEFAULT_VARIANT]
+            while len(current_variants) < active_count:
+                current_variants.append(current_variants[-1])
+            return current_variants[:active_count]
+
+        return [
+            variants[int(rng.integers(0, len(variants)))]
+            for _ in range(active_count)
+        ]
+
+    def _resolve_bottle_count(
+        self,
+        rng: np.random.Generator,
+        request: WaterBottleResetRequest,
+    ) -> int:
+        if request.bottle_variants is not None:
+            count = len(request.bottle_variants)
+        elif request.bottle_count is not None:
+            count = int(request.bottle_count)
+        elif (
+            request.bottle_variant is not None
+            or request.cycle_bottle != 0
+            or request.randomize_variants is False
+        ):
+            count = int(getattr(self, "_current_active_bottle_count", self.min_bottle_count))
+        else:
+            count = int(rng.integers(self.min_bottle_count, self.max_bottle_count + 1))
+        self._validate_bottle_count(count)
+        return count
+
+    def _validate_bottle_count(self, count: int) -> None:
+        if not self.min_bottle_count <= count <= self.max_bottle_count:
+            raise ValueError(
+                f"{type(self).__name__} bottle_count must be in "
+                f"[{self.min_bottle_count}, {self.max_bottle_count}], got {count}"
+            )
+
+    def _set_active_bottle_count(self, bottle_count: int) -> None:
+        self._validate_bottle_count(bottle_count)
+        self._current_active_bottle_count = bottle_count
+        self.perturbations = [
+            *self._bottle_perturbations[:bottle_count],
+            self._bin_perturbation,
+        ]
+
+    def _bottle_variants_from_state(self, state: RandomizationState) -> list[str]:
+        raw_variants = state.metadata.get("bottle_variants")
+        if isinstance(raw_variants, (list, tuple)) and raw_variants:
+            variants = [_water_bottle_canonical_variant_name(str(variant)) for variant in raw_variants]
+        else:
+            count = int(
+                state.metadata.get(
+                    "bottle_count",
+                    sum(1 for name in state.object_states if name.startswith("bottle_")),
+                )
+            )
+            variant = _water_bottle_canonical_variant_name(
+                str(state.metadata.get("bottle_variant", _WATER_BOTTLE_DEFAULT_VARIANT))
+            )
+            variants = [variant] * count
+        self._validate_bottle_count(len(variants))
+        return variants
+
+    def _sample_and_apply_bin_color(
+        self,
+        model: Any,
+        state: RandomizationState,
+        rng: np.random.Generator,
+    ) -> None:
+        bin_color = list(
+            _WATER_BOTTLE_BIN_COLOR_PALETTE[
+                int(rng.integers(len(_WATER_BOTTLE_BIN_COLOR_PALETTE)))
+            ]
+        )
+        state.metadata["bin_color"] = bin_color
+        self._apply_bin_color(model, bin_color)
+
+    def _apply_bin_color(self, model: Any, raw_rgba: Any) -> None:
+        if raw_rgba is None:
+            return
+        rgba = tuple(float(value) for value in raw_rgba)
+        if len(rgba) != 4:
+            logger.warning("Invalid put_bottles bin color: %r", raw_rgba)
+            return
+        _apply_mat_color(model, "water_bottle_garbage_can_mat", rgba)
+
+    def _scene_model_cache_key(
+        self,
+        bottle_variants: list[str],
+        scale_states: dict[str, float],
+    ) -> tuple[Any, ...]:
+        scale_key = tuple(
+            sorted((str(name), round(float(value), 8)) for name, value in scale_states.items())
+        )
+        return (tuple(bottle_variants), scale_key)
+
+    def _try_reload_cached_scene_model(self, cache_key: tuple[Any, ...]) -> bool:
+        if self._env_ref is None:
+            return False
+        cache = getattr(self, "_compiled_scene_model_cache", None)
+        if not cache:
+            return False
+        cached_model = cache.get(cache_key)
+        if cached_model is None:
+            return False
+        cache.move_to_end(cache_key)
+        self._env_ref.reload_from_model(cached_model)
+        return True
+
+    def _store_compiled_scene_model(self, cache_key: tuple[Any, ...]) -> None:
+        if self._env_ref is None:
+            return
+        cache = getattr(self, "_compiled_scene_model_cache", None)
+        if cache is None:
+            self._compiled_scene_model_cache = OrderedDict()
+            cache = self._compiled_scene_model_cache
+        cache[cache_key] = copy.deepcopy(self._env_ref.model)
+        cache.move_to_end(cache_key)
+        while len(cache) > self._scene_model_cache_size:
+            cache.popitem(last=False)
+
+    def _reload_bottle_variant_scene(
+        self,
+        bottle_variants: list[str],
+        scale_states: dict[str, float],
+    ) -> None:
+        if self._env_ref is None:
+            return
+
+        bottle_variants = [_water_bottle_canonical_variant_name(variant) for variant in bottle_variants]
+        preserved_arm_state = self._env_ref._get_reset_arm_state()
+        scene_cache_key = self._scene_model_cache_key(bottle_variants, scale_states)
+        if not self._try_reload_cached_scene_model(scene_cache_key):
+            base_scene_xml = self._base_scene_xml_string
+            base_scene_dir = self._base_scene_xml_dir
+            base_scene_transformed = self._base_scene_xml_transformed
+            if (
+                base_scene_xml is None
+                or "<!-- TASK_ASSETS_PLACEHOLDER -->" not in base_scene_xml
+                or "<!-- TASK_BODY_PLACEHOLDER -->" not in base_scene_xml
+            ):
+                base_scene_xml = _WATER_BOTTLE_BASE_SCENE_XML.read_text()
+                base_scene_dir = _WATER_BOTTLE_BASE_SCENE_XML.parent
+                base_scene_transformed = False
+
+            xml = _build_water_bottle_scene_xml(
+                bottle_variants=bottle_variants,
+                scale_states=scale_states,
+                base_scene_xml=base_scene_xml,
+                base_scene_dir=base_scene_dir,
+            )
+            if self._scene_xml_transform_options is not None and not base_scene_transformed:
+                from xdof_sim.scene_xml import transform_scene_xml
+
+                xml, _ = transform_scene_xml(xml, options=self._scene_xml_transform_options)
+
+            self._env_ref.reload_from_xml(xml)
+            self._store_compiled_scene_model(scene_cache_key)
+
+        from xdof_sim.scene_variants import apply_scene_variant
+
+        self._current_bottle_variants = list(bottle_variants)
+        self._current_active_bottle_count = len(bottle_variants)
+        apply_scene_variant(self._env_ref.model, self._scene_variant)
+        mujoco.mj_resetData(self._env_ref.model, self._env_ref.data)
+        self._env_ref._set_qpos_from_state(preserved_arm_state)
+        mujoco.mj_forward(self._env_ref.model, self._env_ref.data)
+        self._fixed_body_nominals = None
+
+    def _randomize_pose_with_rng(
+        self,
+        *,
+        model: Any,
+        data: Any,
+        seed: int | None,
+        rng: np.random.Generator,
+        scale_states: dict[str, float],
+        metadata: dict[str, Any],
+    ) -> RandomizationState:
+        self._before_sampling(model, data)
+        nominals = self._read_nominals(model, data)
+        last_states: dict[str, dict[str, list[float]]] = {}
+        for _attempt in range(self.max_tries):
+            try:
+                states = self._sample_once(nominals, rng)
+            except _WaterBottlePlacementFailure:
+                continue
+            last_states = states
+            if not self._bounds_ok(states):
+                continue
+            if not self._pairwise_ok(states):
+                continue
+            self._apply_states(model, data, states)
+            mujoco.mj_forward(model, data)
+            if not self._contacts_ok(model, data):
+                continue
+            return RandomizationState(
+                seed=seed or 0,
+                object_states=states,
+                scale_states=scale_states,
+                metadata=dict(metadata),
+            )
+
+        logger.warning(
+            "%s: no collision-free placement found after %d tries — using last sample",
+            type(self).__name__,
+            self.max_tries,
+        )
+        if not last_states:
+            last_states = self._sample_once(nominals, rng)
+        self._apply_states(model, data, last_states)
+        mujoco.mj_forward(model, data)
+        return RandomizationState(
+            seed=seed or 0,
+            object_states=last_states,
+            scale_states=scale_states,
+            metadata=dict(metadata),
+        )
+
+    @staticmethod
+    def _rotated_half_extents(half_x: float, half_y: float, yaw: float) -> tuple[float, float]:
+        c = abs(float(np.cos(yaw)))
+        s = abs(float(np.sin(yaw)))
+        return c * half_x + s * half_y, s * half_x + c * half_y
+
+    @staticmethod
+    def _obb_axes(yaw: float) -> tuple[np.ndarray, np.ndarray]:
+        c = float(np.cos(yaw))
+        s = float(np.sin(yaw))
+        return (
+            np.array([c, s], dtype=np.float64),
+            np.array([-s, c], dtype=np.float64),
+        )
+
+    @classmethod
+    def _obb_overlap(
+        cls,
+        center_a: np.ndarray,
+        half_a: tuple[float, float],
+        yaw_a: float,
+        center_b: np.ndarray,
+        half_b: tuple[float, float],
+        yaw_b: float,
+        margin: float,
+    ) -> bool:
+        axis_ax, axis_ay = cls._obb_axes(yaw_a)
+        axis_bx, axis_by = cls._obb_axes(yaw_b)
+        axes = (axis_ax, axis_ay, axis_bx, axis_by)
+        delta = center_b - center_a
+        half_a = (half_a[0] + margin, half_a[1] + margin)
+        half_b = (half_b[0] + margin, half_b[1] + margin)
+
+        for axis in axes:
+            distance = abs(float(np.dot(delta, axis)))
+            radius_a = (
+                half_a[0] * abs(float(np.dot(axis_ax, axis)))
+                + half_a[1] * abs(float(np.dot(axis_ay, axis)))
+            )
+            radius_b = (
+                half_b[0] * abs(float(np.dot(axis_bx, axis)))
+                + half_b[1] * abs(float(np.dot(axis_by, axis)))
+            )
+            if distance > radius_a + radius_b:
+                return False
+        return True
+
+    def _bottle_footprint(
+        self,
+        index: int,
+        state: dict[str, list[float]],
+    ) -> tuple[np.ndarray, tuple[float, float], float]:
+        bottle_variants = list(getattr(self, "_current_bottle_variants", []))
+        variant_name = (
+            bottle_variants[index]
+            if index < len(bottle_variants)
+            else _WATER_BOTTLE_DEFAULT_VARIANT
+        )
+        scale_factor = float(
+            getattr(self, "_current_scale_states", {}).get(
+                self._bottle_perturbations[index].joint_name,
+                1.0,
+            )
+        )
+        half_length, half_radius, _vertical_radius = _water_bottle_flat_compiled_metadata(variant_name)
+        yaw = _water_bottle_flat_yaw_from_quat(np.asarray(state["quat"], dtype=np.float64))
+        return (
+            _water_bottle_flat_center_from_pose(
+                pos=state["pos"],
+                quat=state["quat"],
+                variant_name=variant_name,
+                scale_factor=scale_factor,
+            ),
+            (half_length * scale_factor, half_radius * scale_factor),
+            yaw,
+        )
+
+    def _bin_footprint(
+        self,
+        state: dict[str, list[float]],
+    ) -> tuple[np.ndarray, tuple[float, float], float]:
+        scale_factor = float(
+            getattr(self, "_current_scale_states", {}).get(
+                self._bin_perturbation.joint_name,
+                1.0,
+            )
+        )
+        half_x, half_y = self._bin_footprint_half_xy
+        return (
+            np.asarray(state["pos"][:2], dtype=np.float64),
+            (half_x * scale_factor, half_y * scale_factor),
+            _yaw_from_quat(np.asarray(state["quat"], dtype=np.float64)),
+        )
+
+    def _bounds_ok(self, states: dict[str, dict[str, list[float]]]) -> bool:
+        x_min, x_max, y_min, y_max = self.table_edge_bounds
+        for index, perturbation in enumerate(self._bottle_perturbations[:self._current_active_bottle_count]):
+            state = states.get(perturbation.joint_name)
+            if state is None:
+                return False
+            center, half, yaw = self._bottle_footprint(index, state)
+            extent_x, extent_y = self._rotated_half_extents(half[0], half[1], yaw)
+            if center[0] - extent_x < x_min + self.table_margin_m:
+                return False
+            if center[0] + extent_x > x_max - self.table_margin_m:
+                return False
+            if center[1] - extent_y < y_min + self.table_margin_m:
+                return False
+            if center[1] + extent_y > y_max - self.table_margin_m:
+                return False
+
+        bin_state = states.get(self._bin_perturbation.joint_name)
+        if bin_state is None:
+            return False
+        center, half, yaw = self._bin_footprint(bin_state)
+        extent_x, extent_y = self._rotated_half_extents(half[0], half[1], yaw)
+        if center[0] - extent_x < x_min + self.table_margin_m:
+            return False
+        if center[0] + extent_x > x_max - self.table_margin_m:
+            return False
+        if center[1] - extent_y < y_min + self.table_margin_m:
+            return False
+        if center[1] + extent_y > y_max - self.table_margin_m:
+            return False
+        return True
+
+    def _pairwise_ok(self, states: dict[str, dict[str, list[float]]]) -> bool:
+        entries: list[tuple[np.ndarray, tuple[float, float], float]] = []
+        for index, perturbation in enumerate(self._bottle_perturbations[:self._current_active_bottle_count]):
+            state = states.get(perturbation.joint_name)
+            if state is None:
+                return False
+            entries.append(self._bottle_footprint(index, state))
+
+        for i in range(len(entries)):
+            center_i, half_i, yaw_i = entries[i]
+            for j in range(i + 1, len(entries)):
+                center_j, half_j, yaw_j = entries[j]
+                if self._obb_overlap(
+                    center_i,
+                    half_i,
+                    yaw_i,
+                    center_j,
+                    half_j,
+                    yaw_j,
+                    self.bottle_margin_m,
+                ):
+                    return False
+
+        bin_state = states.get(self._bin_perturbation.joint_name)
+        if bin_state is None:
+            return False
+        bin_center, bin_half, bin_yaw = self._bin_footprint(bin_state)
+        for bottle_center, bottle_half, bottle_yaw in entries:
+            if self._obb_overlap(
+                bottle_center,
+                bottle_half,
+                bottle_yaw,
+                bin_center,
+                bin_half,
+                bin_yaw,
+                self.bin_margin_m,
+            ):
+                return False
+        return True
+
+    def _contacts_ok(self, model: Any, data: Any) -> bool:
+        return super()._contacts_ok(model, data)
+
+    def _sample_once(
+        self,
+        nominals: dict[str, tuple[np.ndarray, np.ndarray]],
+        rng: np.random.Generator,
+    ) -> dict[str, dict[str, list[float]]]:
+        states: dict[str, dict[str, list[float]]] = {}
+        entries: list[tuple[np.ndarray, tuple[float, float], float]] = []
+        x_min, x_max, y_min, y_max = self.table_edge_bounds
+
+        bin_state = self._sample_bin_state(nominals, rng)
+        states[self._bin_perturbation.joint_name] = bin_state
+        bin_entry = self._bin_footprint(bin_state)
+
+        for index, perturbation in enumerate(self._bottle_perturbations[:self._current_active_bottle_count]):
+            variant_name = (
+                self._current_bottle_variants[index]
+                if index < len(self._current_bottle_variants)
+                else _WATER_BOTTLE_DEFAULT_VARIANT
+            )
+            scale_factor = float(self._current_scale_states.get(perturbation.joint_name, 1.0))
+            half_length, half_radius, vertical_radius = _water_bottle_flat_compiled_metadata(variant_name)
+            half = (half_length * scale_factor, half_radius * scale_factor)
+            z = (
+                _WATER_BOTTLE_TABLE_Z
+                + vertical_radius * scale_factor
+                + _WATER_BOTTLE_FLAT_SPAWN_CLEARANCE_M
+            )
+
+            for _candidate_attempt in range(self._bottle_sample_tries):
+                yaw = float(rng.uniform(*perturbation.delta_yaw))
+                extent_x, extent_y = self._rotated_half_extents(half[0], half[1], yaw)
+                x_lo = x_min + self.table_margin_m + extent_x
+                x_hi = x_max - self.table_margin_m - extent_x
+                y_lo = y_min + self.table_margin_m + extent_y
+                y_hi = y_max - self.table_margin_m - extent_y
+                if x_lo > x_hi or y_lo > y_hi:
+                    break
+
+                center = np.array(
+                    [
+                        float(rng.uniform(x_lo, x_hi)),
+                        float(rng.uniform(y_lo, y_hi)),
+                    ],
+                    dtype=np.float64,
+                )
+                if any(
+                    self._obb_overlap(
+                        center,
+                        half,
+                        yaw,
+                        prev_center,
+                        prev_half,
+                        prev_yaw,
+                        self.bottle_margin_m,
+                    )
+                    for prev_center, prev_half, prev_yaw in entries
+                ):
+                    continue
+                if self._obb_overlap(
+                    center,
+                    half,
+                    yaw,
+                    bin_entry[0],
+                    bin_entry[1],
+                    bin_entry[2],
+                    self.bin_margin_m,
+                ):
+                    continue
+
+                anchor_offset = np.array([np.cos(yaw), np.sin(yaw)], dtype=np.float64) * half[0]
+                pos_xy = center - anchor_offset
+                quat = _water_bottle_flat_quat(yaw)
+                states[perturbation.joint_name] = {
+                    "pos": [float(pos_xy[0]), float(pos_xy[1]), float(z)],
+                    "quat": quat.tolist(),
+                }
+                entries.append((center, half, yaw))
+                break
+            else:
+                raise _WaterBottlePlacementFailure()
+
+            if perturbation.joint_name not in states:
+                raise _WaterBottlePlacementFailure()
+
+        return states
+
+    def _sample_bin_state(
+        self,
+        nominals: dict[str, tuple[np.ndarray, np.ndarray]],
+        rng: np.random.Generator,
+    ) -> dict[str, list[float]]:
+        joint_name = self._bin_perturbation.joint_name
+        if joint_name not in nominals:
+            raise _WaterBottlePlacementFailure()
+
+        nominal_pos, nominal_quat = nominals[joint_name]
+        scale_factor = float(self._current_scale_states.get(joint_name, 1.0))
+        half_x = self._bin_footprint_half_xy[0] * scale_factor
+        half_y = self._bin_footprint_half_xy[1] * scale_factor
+        x_min, x_max, y_min, y_max = self.table_edge_bounds
+        x_lo = max(
+            nominal_pos[0] + self._bin_perturbation.delta_x[0],
+            x_min + self.table_margin_m + half_x,
+        )
+        x_hi = min(
+            nominal_pos[0] + self._bin_perturbation.delta_x[1],
+            x_max - self.table_margin_m - half_x,
+        )
+        y_lo = max(
+            nominal_pos[1] + self._bin_perturbation.delta_y[0],
+            y_min + self.table_margin_m + half_y,
+        )
+        y_hi = min(
+            nominal_pos[1] + self._bin_perturbation.delta_y[1],
+            y_max - self.table_margin_m - half_y,
+        )
+        if x_lo > x_hi or y_lo > y_hi:
+            raise _WaterBottlePlacementFailure()
+
+        yaw = float(rng.uniform(*self._bin_perturbation.delta_yaw))
+        quat = _quat_mul(_quat_from_yaw(yaw), nominal_quat)
+        z = _WATER_BOTTLE_TABLE_Z + self._bin_body_to_bottom_z * scale_factor + 0.001
+        return {
+            "pos": [
+                float(rng.uniform(x_lo, x_hi)),
+                float(rng.uniform(y_lo, y_hi)),
+                float(z),
+            ],
+            "quat": quat.tolist(),
+        }
 
 
 class MarkerRandomizer(SceneRandomizer):
@@ -3204,6 +3957,21 @@ _MUG_TASK_BODY_NAMES: dict[str, tuple[str, ...]] = {
     "mug_flip": ("mug_1", "mug_2", "mug_3", "mug_4"),
     "mug_tree": ("mug_1", "mug_2", "mug_3"),
 }
+_WATER_BOTTLE_BASE_SCENE_XML = _MODELS_DIR / "yam_put_bottles_scene.xml"
+_WATER_BOTTLE_TASK_ASSET_ROOT = _MODELS_DIR / "assets" / "task_water_bottles" / "bottle"
+_WATER_BOTTLE_DEFAULT_VARIANT = "bottle_0"
+_WATER_BOTTLE_MASS_KG = 0.05
+_WATER_BOTTLE_TABLE_Z = 0.75
+_WATER_BOTTLE_FLAT_SPAWN_CLEARANCE_M = 0.002
+_WATER_BOTTLE_WRAPPER_XY: tuple[tuple[float, float], ...] = (
+    (0.46, -0.38),
+    (0.62, -0.38),
+    (0.78, -0.38),
+    (0.46, 0.38),
+    (0.62, 0.38),
+    (0.78, 0.38),
+)
+_WATER_BOTTLE_WRAPPER_Z = 0.754
 _MUG_FLIP_TRAY_INNER_HALF_XY = (0.166, 0.112)
 _MUG_FLIP_TRAY_MARGIN_M = 0.004
 _MUG_FLIP_TRAY_FLOOR_Z_OFFSET = 0.008
@@ -3675,6 +4443,9 @@ def _build_dishrack_scene_xml(
     xml = base_text.replace("<!-- TASK_DEFAULTS_PLACEHOLDER -->", "")
     xml = xml.replace("<!-- TASK_ASSETS_PLACEHOLDER -->", _dishrack_serialize_elements(task_assets))
     xml = xml.replace("<!-- TASK_BODY_PLACEHOLDER -->", _dishrack_serialize_elements(task_bodies))
+    bin_scale = float(scale_states.get("bin_joint", 1.0))
+    if abs(bin_scale - 1.0) > 1e-9:
+        xml = _apply_object_scales_to_scene_xml(xml, {"bin_joint": bin_scale})
     return _resolve_scene_xml_paths(xml, base_dir)
 
 
@@ -4035,6 +4806,332 @@ def _mug_plain_color_material_names(task_name: str, instance_index: int) -> tupl
     )
 
 
+@_lru_cache(maxsize=None)
+def _water_bottle_variant_names() -> list[str]:
+    variants = [
+        path.name
+        for path in _WATER_BOTTLE_TASK_ASSET_ROOT.iterdir()
+        if path.is_dir() and (path / "model.xml").exists()
+    ]
+    variants.sort(
+        key=lambda name: (
+            0,
+            int(name[len("bottle_") :]),
+        )
+        if name.startswith("bottle_") and name[len("bottle_") :].isdigit()
+        else (1, name)
+    )
+    if not variants:
+        raise FileNotFoundError(f"No water bottle variants found under {_WATER_BOTTLE_TASK_ASSET_ROOT}")
+    return variants
+
+
+def _water_bottle_canonical_variant_name(variant_name: str) -> str:
+    if variant_name == "current":
+        return _WATER_BOTTLE_DEFAULT_VARIANT
+    if variant_name.isdigit():
+        return f"bottle_{variant_name}"
+    if variant_name.startswith("bottle") and variant_name[6:].isdigit():
+        return f"bottle_{variant_name[6:]}"
+    return variant_name
+
+
+def _water_bottle_variant_dir(variant_name: str) -> _Path:
+    variant_name = _water_bottle_canonical_variant_name(variant_name)
+    path = _WATER_BOTTLE_TASK_ASSET_ROOT / variant_name
+    if not (path / "model.xml").exists():
+        raise FileNotFoundError(f"Missing water bottle variant model.xml: {path}")
+    return path
+
+
+def _water_bottle_body_name(index: int) -> str:
+    return f"bottle_{index + 1}"
+
+
+def _water_bottle_joint_name(index: int) -> str:
+    return f"{_water_bottle_body_name(index)}_joint"
+
+
+def _water_bottle_instance_prefix(variant_name: str, instance_index: int) -> str:
+    return f"bottle_{instance_index}_{variant_name}"
+
+
+@_lru_cache(maxsize=None)
+def _water_bottle_compiled_raw_metadata(
+    variant_name: str,
+) -> tuple[float, float, float, float, float, float]:
+    variant_dir = _water_bottle_variant_dir(variant_name)
+    model = mujoco.MjModel.from_xml_path(str(variant_dir / "model.xml"))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    min_xyz, max_xyz = _dishrack_compiled_model_bounds(model, data)
+    half_xy = 0.5 * (max_xyz[:2] - min_xyz[:2])
+    center_xy = 0.5 * (min_xyz[:2] + max_xyz[:2])
+    return (
+        float(half_xy[0]),
+        float(half_xy[1]),
+        -float(center_xy[0]),
+        -float(center_xy[1]),
+        -float(min_xyz[2]),
+        float(max_xyz[2] - min_xyz[2]),
+    )
+
+
+@_lru_cache(maxsize=None)
+def _water_bottle_compiled_metadata(variant_name: str) -> tuple[float, float, float, float]:
+    half_x, half_y, _offset_x, _offset_y, _offset_z, height = _water_bottle_compiled_raw_metadata(variant_name)
+    return half_x, half_y, 0.0, height
+
+
+@_lru_cache(maxsize=None)
+def _water_bottle_compiled_anchor_offset(variant_name: str) -> tuple[float, float, float]:
+    _half_x, _half_y, offset_x, offset_y, offset_z, _height = _water_bottle_compiled_raw_metadata(variant_name)
+    return offset_x, offset_y, offset_z
+
+
+@_lru_cache(maxsize=None)
+def _water_bottle_flat_compiled_metadata(variant_name: str) -> tuple[float, float, float]:
+    half_x, half_y, _offset_x, _offset_y, _offset_z, height = _water_bottle_compiled_raw_metadata(variant_name)
+    return 0.5 * height, half_y, half_x
+
+
+def _quat_rotate_vector(quat: np.ndarray, vector: np.ndarray) -> np.ndarray:
+    q = np.asarray(quat, dtype=np.float64)
+    v = np.asarray(vector, dtype=np.float64)
+    q_conj = np.array([q[0], -q[1], -q[2], -q[3]], dtype=np.float64)
+    rotated = _quat_mul(_quat_mul(q, np.array([0.0, v[0], v[1], v[2]], dtype=np.float64)), q_conj)
+    return rotated[1:]
+
+
+def _water_bottle_flat_quat(yaw: float) -> np.ndarray:
+    flat_quat = _quat_from_axis_angle(np.array([0.0, 1.0, 0.0], dtype=np.float64), np.pi / 2.0)
+    quat = _quat_mul(_quat_from_yaw(yaw), flat_quat)
+    norm = float(np.linalg.norm(quat))
+    if norm > 0.0:
+        quat = quat / norm
+    return quat
+
+
+def _water_bottle_flat_yaw_from_quat(quat: np.ndarray) -> float:
+    long_axis = _quat_rotate_vector(np.asarray(quat, dtype=np.float64), np.array([0.0, 0.0, 1.0]))
+    return float(np.arctan2(long_axis[1], long_axis[0]))
+
+
+def _water_bottle_flat_center_from_pose(
+    *,
+    pos: list[float] | tuple[float, ...],
+    quat: list[float] | tuple[float, ...] | np.ndarray,
+    variant_name: str,
+    scale_factor: float,
+) -> np.ndarray:
+    yaw = _water_bottle_flat_yaw_from_quat(np.asarray(quat, dtype=np.float64))
+    half_length, _half_radius, _vertical_radius = _water_bottle_flat_compiled_metadata(variant_name)
+    offset = np.array([np.cos(yaw), np.sin(yaw)], dtype=np.float64) * half_length * float(scale_factor)
+    return np.asarray(pos[:2], dtype=np.float64) + offset
+
+
+def _water_bottle_prepare_imported_geoms(body: _ET.Element) -> None:
+    for parent in body.iter():
+        for child in list(parent):
+            if child.tag != "geom":
+                continue
+
+            name = child.get("name", "")
+            child_class = child.get("class", "")
+            mesh_name = child.get("mesh")
+            if (
+                child_class == "region"
+                or name.startswith("reg_")
+                or mesh_name is None
+            ):
+                parent.remove(child)
+                continue
+
+            is_visual = child.get("contype") == "0" and child.get("conaffinity") == "0"
+            child.attrib.pop("class", None)
+            child.attrib.pop("mass", None)
+            child.set("density", "0")
+            if is_visual:
+                child.set("group", "2")
+                child.set("contype", "0")
+                child.set("conaffinity", "0")
+                continue
+
+            child.set("group", "3")
+            child.set("rgba", "0 0 0 0")
+            child.set("friction", "3.0 0.03 0.003")
+            child.set("condim", "6")
+            child.set("solref", "0.004 1")
+            child.set("solimp", "0.998 0.998 0.001")
+            child.set("priority", "1")
+
+
+def _water_bottle_add_inertial(
+    body: _ET.Element,
+    *,
+    variant_name: str,
+    scale_factor: float,
+) -> None:
+    for child in list(body):
+        if child.tag == "inertial":
+            body.remove(child)
+
+    half_x, half_y, offset_x, offset_y, offset_z, height = _water_bottle_compiled_raw_metadata(variant_name)
+    scale_factor = float(scale_factor)
+    mass = _WATER_BOTTLE_MASS_KG
+    size_x = 2.0 * half_x * scale_factor
+    size_y = 2.0 * half_y * scale_factor
+    size_z = height * scale_factor
+    inertia = [
+        mass * (size_y * size_y + size_z * size_z) / 12.0,
+        mass * (size_x * size_x + size_z * size_z) / 12.0,
+        mass * (size_x * size_x + size_y * size_y) / 12.0,
+    ]
+    com_pos = [
+        -offset_x * scale_factor,
+        -offset_y * scale_factor,
+        -offset_z * scale_factor + 0.5 * size_z,
+    ]
+    inertial = _ET.Element(
+        "inertial",
+        pos=_format_float_list(com_pos),
+        mass=_format_float_list([mass]),
+        diaginertia=_format_float_list(inertia),
+    )
+    body.insert(0, inertial)
+
+
+def _water_bottle_build_object_block(
+    *,
+    variant_name: str,
+    instance_index: int,
+    scale_factor: float,
+    object_name: str,
+    joint_name: str,
+) -> tuple[list[_ET.Element], _ET.Element]:
+    variant_name = _water_bottle_canonical_variant_name(variant_name)
+    variant_dir = _water_bottle_variant_dir(variant_name)
+    root = _ET.parse(str(variant_dir / "model.xml")).getroot()
+    object_body = _dishrack_find_object_body(root)
+    offset = np.asarray(_water_bottle_compiled_anchor_offset(variant_name), dtype=np.float64) * float(scale_factor)
+
+    prefix = _water_bottle_instance_prefix(variant_name, instance_index)
+    mesh_map: dict[str, str] = {}
+    texture_map: dict[str, str] = {}
+    material_map: dict[str, str] = {}
+    temp_asset = _ET.Element("asset")
+
+    asset_root = root.find("asset")
+    if asset_root is not None:
+        asset_children = list(asset_root)
+        for asset_child in asset_children:
+            local_name = _dishrack_asset_local_name(asset_child)
+            if asset_child.tag == "mesh":
+                mesh_map[local_name] = _dishrack_prefixed_name(prefix, local_name)
+            elif asset_child.tag == "texture":
+                texture_map[local_name] = _dishrack_prefixed_name(prefix, local_name)
+            elif asset_child.tag == "material":
+                material_map[local_name] = _dishrack_prefixed_name(prefix, local_name)
+
+        for asset_child in asset_children:
+            cloned = copy.deepcopy(asset_child)
+            local_name = _dishrack_asset_local_name(asset_child)
+            if asset_child.tag == "mesh":
+                cloned.set("name", mesh_map[local_name])
+                _dishrack_absolutize_file_attr(cloned, variant_dir)
+            elif asset_child.tag == "texture":
+                cloned.set("name", texture_map[local_name])
+                _dishrack_absolutize_file_attr(cloned, variant_dir)
+            elif asset_child.tag == "material":
+                cloned.set("name", material_map[local_name])
+                texture_name = asset_child.get("texture")
+                if texture_name and texture_name in texture_map:
+                    cloned.set("texture", texture_map[texture_name])
+            temp_asset.append(cloned)
+
+    cloned_body = copy.deepcopy(object_body)
+    _dishrack_remove_dynamic_joints(cloned_body)
+    _dishrack_prefix_body_names(cloned_body, prefix)
+    _dishrack_rewrite_asset_refs(
+        cloned_body,
+        mesh_map=mesh_map,
+        material_map=material_map,
+    )
+    _water_bottle_prepare_imported_geoms(cloned_body)
+    _dishrack_shift_body(cloned_body, offset)
+
+    if abs(scale_factor - 1.0) > 1e-9:
+        mesh_assets = {
+            mesh.get("name", ""): mesh
+            for mesh in temp_asset.findall("mesh")
+            if mesh.get("name")
+        }
+        _scale_body_subtree(
+            body=cloned_body,
+            factor=scale_factor,
+            target_name=joint_name,
+            asset_elem=temp_asset,
+            mesh_assets=mesh_assets,
+        )
+
+    _water_bottle_add_inertial(
+        cloned_body,
+        variant_name=variant_name,
+        scale_factor=scale_factor,
+    )
+
+    x, y = _WATER_BOTTLE_WRAPPER_XY[instance_index]
+    wrapper = _ET.Element(
+        "body",
+        name=object_name,
+        pos=_format_float_list([x, y, _WATER_BOTTLE_WRAPPER_Z]),
+    )
+    _ET.SubElement(wrapper, "freejoint", name=joint_name)
+    wrapper.append(cloned_body)
+    return list(temp_asset), wrapper
+
+
+def _build_water_bottle_scene_xml(
+    *,
+    bottle_variants: list[str] | tuple[str, ...],
+    scale_states: dict[str, float],
+    base_scene_xml: str | None,
+    base_scene_dir: _Path | None,
+) -> str:
+    if not WaterBottleRandomizer.min_bottle_count <= len(bottle_variants) <= WaterBottleRandomizer.max_bottle_count:
+        raise ValueError(
+            "put_bottles requires between "
+            f"{WaterBottleRandomizer.min_bottle_count} and "
+            f"{WaterBottleRandomizer.max_bottle_count} bottle variants, got {len(bottle_variants)}"
+        )
+
+    base_text = base_scene_xml or _WATER_BOTTLE_BASE_SCENE_XML.read_text()
+    base_dir = base_scene_dir or _WATER_BOTTLE_BASE_SCENE_XML.parent
+    task_assets: list[_ET.Element] = []
+    task_bodies: list[_ET.Element] = []
+
+    for index, variant_name in enumerate(bottle_variants):
+        body_name = _water_bottle_body_name(index)
+        joint_name = _water_bottle_joint_name(index)
+        variant_assets, bottle_body = _water_bottle_build_object_block(
+            variant_name=variant_name,
+            instance_index=index,
+            scale_factor=float(scale_states.get(joint_name, 1.0)),
+            object_name=body_name,
+            joint_name=joint_name,
+        )
+        task_assets.extend(variant_assets)
+        task_bodies.append(bottle_body)
+
+    xml = base_text.replace("<!-- TASK_DEFAULTS_PLACEHOLDER -->", "")
+    xml = xml.replace("<!-- TASK_ASSETS_PLACEHOLDER -->", _dishrack_serialize_elements(task_assets))
+    xml = xml.replace("<!-- TASK_BODY_PLACEHOLDER -->", _dishrack_serialize_elements(task_bodies))
+    bin_scale = float(scale_states.get("bin_joint", 1.0))
+    if abs(bin_scale - 1.0) > 1e-9:
+        xml = _apply_object_scales_to_scene_xml(xml, {"bin_joint": bin_scale})
+    return _resolve_scene_xml_paths(xml, base_dir)
+
+
 def _inhand_asset_base(category: str) -> _Path:
     return _OBJAVERSE_BASE if category in _OBJAVERSE_CATEGORIES else _LIGHTWHEEL_BASE
 
@@ -4299,8 +5396,12 @@ class InHandTransferRandomizer(SceneRandomizer):
 # Registry
 # ---------------------------------------------------------------------------
 
+_WATER_BOTTLE_RANDOMIZER = WaterBottleRandomizer()
+
 TASK_RANDOMIZERS: dict[str, SceneRandomizer] = {
     "bottles":      BottlesRandomizer(),
+    "put_bottles":  _WATER_BOTTLE_RANDOMIZER,
+    "water_bottles": _WATER_BOTTLE_RANDOMIZER,
     "marker":       MarkerRandomizer(),
     "pour":         PourRandomizer(),
     "drawer":       DrawerRandomizer(),
