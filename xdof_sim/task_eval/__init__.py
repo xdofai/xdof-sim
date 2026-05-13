@@ -3,6 +3,7 @@
 from xdof_sim.task_eval.base import TaskEvalResult, TaskEvaluator
 from xdof_sim.task_eval.debug_spec import EvalDebugSpec, PlotSpec, ThresholdSpec
 from xdof_sim.task_eval.bottles import BottlesInBinEvaluator
+from xdof_sim.task_eval.sweep import SweepAwayEvaluator
 from xdof_sim.task_eval.registry import make_task_evaluator
 
 __all__ = [
@@ -12,5 +13,6 @@ __all__ = [
     "PlotSpec",
     "EvalDebugSpec",
     "BottlesInBinEvaluator",
+    "SweepAwayEvaluator",
     "make_task_evaluator",
 ]

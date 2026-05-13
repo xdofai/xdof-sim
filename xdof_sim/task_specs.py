@@ -89,6 +89,7 @@ _TASK_SPECS: tuple[SimTaskSpec, ...] = (
         name="sweep_away_paper_scraps_from_table",
         env_task="sweep",
         prompt="sweep away paper scraps from the table",
+        evaluator_name="sweep_away",
         aliases=("sim_sweep_away_paper_scraps_from_the_table", "sweep"),
     ),
     SimTaskSpec(

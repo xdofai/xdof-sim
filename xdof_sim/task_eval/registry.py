@@ -8,6 +8,7 @@ import mujoco
 
 from xdof_sim.task_eval.base import TaskEvaluator
 from xdof_sim.task_eval.bottles import BottlesInBinEvaluator
+from xdof_sim.task_eval.sweep import SweepAwayEvaluator
 from xdof_sim.task_specs import SimTaskSpec, maybe_get_task_spec
 
 TaskEvaluatorFactory: TypeAlias = type[TaskEvaluator]
@@ -15,6 +16,7 @@ TaskEvaluatorFactory: TypeAlias = type[TaskEvaluator]
 
 _TASK_EVALUATORS: dict[str, TaskEvaluatorFactory] = {
     "bottles_in_bin": BottlesInBinEvaluator,
+    "sweep_away": SweepAwayEvaluator,
 }
 
 
@@ -36,4 +38,3 @@ def make_task_evaluator(
         ) from exc
 
     return evaluator_cls(model=model, spec=spec, **spec.evaluator_kwargs())
-

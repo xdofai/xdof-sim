@@ -163,6 +163,17 @@ class BatchedWarpYAMEnv:
         self._world_reset_info = reset_info
         if self._task_evaluator is not None:
             self._task_evaluator.reset(nworld=self.num_worlds)
+            if hasattr(self._task_evaluator, "set_active_trash_joints"):
+                active_trash_joints = [
+                    getattr(item.randomization, "metadata", {}).get("trash_joints")
+                    if item.randomization is not None
+                    else None
+                    for item in reset_info
+                ]
+                if any(joints is not None for joints in active_trash_joints):
+                    if not all(joints is not None for joints in active_trash_joints):
+                        raise ValueError("Sweep active trash metadata missing for some worlds")
+                    self._task_evaluator.set_active_trash_joints(active_trash_joints)
         obs = self.get_obs()
         info = {
             "world_seeds": [item.seed for item in reset_info],
@@ -184,7 +195,31 @@ class BatchedWarpYAMEnv:
         ctrl[:, self._ctrl_indices] = scaled
         return ctrl
 
-    def step(self, action_batch: np.ndarray) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
+    def _state_only_obs(self) -> dict[str, Any]:
+        state = self._state_batch()
+        masks = {
+            name: np.zeros((self.num_worlds,), dtype=bool)
+            for name in self.camera_names
+        }
+        if hasattr(self._runtime.d_warp, "time"):
+            ts = self._runtime.d_warp.time.numpy()[: self.num_worlds].copy()
+        else:
+            ts = np.zeros((self.num_worlds,), dtype=np.float32)
+        timestamps = {name: ts.copy() for name in self.camera_names}
+        return {
+            "images": {},
+            "masks": masks,
+            "state": state,
+            "prompt": [self.prompt] * self.num_worlds,
+            "camera_timestamps": timestamps,
+        }
+
+    def step(
+        self,
+        action_batch: np.ndarray,
+        *,
+        render_obs: bool = True,
+    ) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
         ctrl = self._controls_from_actions(action_batch)
         self._runtime.set_ctrl_batch(ctrl)
         self._runtime.step(nstep=self._control_decimation)
@@ -204,7 +239,8 @@ class BatchedWarpYAMEnv:
             info["task_reward"] = task_eval.reward.copy()
             info["task_success"] = task_eval.success.copy()
             info["task_eval"] = task_eval.to_info(squeeze=False)
-        return self.get_obs(), reward, False, False, info
+        obs = self.get_obs() if render_obs else self._state_only_obs()
+        return obs, reward, False, False, info
 
     def _state_batch(self) -> np.ndarray:
         qpos = self._runtime.d_warp.qpos.numpy()[: self.num_worlds].copy()

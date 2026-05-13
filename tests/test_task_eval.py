@@ -138,5 +138,79 @@ class BottlesTaskEvalTests(unittest.TestCase):
         self.assertEqual(result.to_info(squeeze=False)["num_bottles_in_bin"], [2, 1])
 
 
+class SweepTaskEvalTests(unittest.TestCase):
+    def test_sweep_evaluator_requires_active_scraps_in_bin(self) -> None:
+        env = xdof_sim.make_env(scene="hybrid", task="sweep", render_cameras=False)
+        try:
+            _obs, info = env.reset(seed=123, randomize=True)
+            randomization = info["randomization"]
+            active_joints = list(randomization.metadata["trash_joints"])
+
+            reset_eval = env.evaluate_task()
+            self.assertIsNotNone(reset_eval)
+            assert reset_eval is not None
+            self.assertEqual(int(reset_eval.metrics["num_active_scraps"][0]), len(active_joints))
+            self.assertEqual(int(reset_eval.metrics["num_scraps_inside_table_footprint"][0]), len(active_joints))
+            self.assertEqual(int(reset_eval.metrics["num_scraps_in_bin"][0]), 0)
+            self.assertEqual(float(reset_eval.reward[0]), 0.0)
+            self.assertFalse(bool(reset_eval.success[0]))
+
+            all_trash_joints = [f"trash_{idx}_jnt" for idx in range(1, 8)]
+            inactive_joints = [
+                joint_name for joint_name in all_trash_joints if joint_name not in active_joints
+            ]
+            bin_joint_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_JOINT, "bin_joint")
+            bin_qpos_addr = int(env.model.jnt_qposadr[bin_joint_id])
+            bin_pos = env.data.qpos[bin_qpos_addr : bin_qpos_addr + 3].copy()
+            for joint_name in inactive_joints:
+                joint_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+                qpos_addr = int(env.model.jnt_qposadr[joint_id])
+                env.data.qpos[qpos_addr : qpos_addr + 3] = bin_pos
+            mujoco.mj_forward(env.model, env.data)
+
+            inactive_ignored_eval = env.evaluate_task()
+            self.assertIsNotNone(inactive_ignored_eval)
+            assert inactive_ignored_eval is not None
+            self.assertEqual(
+                int(inactive_ignored_eval.metrics["num_active_scraps"][0]),
+                len(active_joints),
+            )
+            self.assertEqual(int(inactive_ignored_eval.metrics["num_scraps_in_bin"][0]), 0)
+            self.assertEqual(float(inactive_ignored_eval.reward[0]), 0.0)
+            self.assertFalse(bool(inactive_ignored_eval.success[0]))
+
+            for joint_name in active_joints:
+                joint_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+                qpos_addr = int(env.model.jnt_qposadr[joint_id])
+                env.data.qpos[qpos_addr : qpos_addr + 3] = np.array([0.95, 0.0, 0.76])
+            mujoco.mj_forward(env.model, env.data)
+
+            off_table_eval = env.evaluate_task()
+            self.assertIsNotNone(off_table_eval)
+            assert off_table_eval is not None
+            self.assertEqual(int(off_table_eval.metrics["num_active_scraps"][0]), len(active_joints))
+            self.assertEqual(int(off_table_eval.metrics["num_scraps_inside_table_footprint"][0]), 0)
+            self.assertEqual(int(off_table_eval.metrics["num_scraps_outside_table_footprint"][0]), len(active_joints))
+            self.assertEqual(int(off_table_eval.metrics["num_scraps_in_bin"][0]), 0)
+            self.assertEqual(float(off_table_eval.reward[0]), 0.0)
+            self.assertFalse(bool(off_table_eval.success[0]))
+
+            for joint_name in active_joints:
+                joint_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+                qpos_addr = int(env.model.jnt_qposadr[joint_id])
+                env.data.qpos[qpos_addr : qpos_addr + 3] = bin_pos
+            mujoco.mj_forward(env.model, env.data)
+
+            in_bin_eval = env.evaluate_task()
+            self.assertIsNotNone(in_bin_eval)
+            assert in_bin_eval is not None
+            self.assertEqual(int(in_bin_eval.metrics["num_active_scraps"][0]), len(active_joints))
+            self.assertEqual(int(in_bin_eval.metrics["num_scraps_in_bin"][0]), len(active_joints))
+            self.assertEqual(float(in_bin_eval.reward[0]), 1.0)
+            self.assertTrue(bool(in_bin_eval.success[0]))
+        finally:
+            env.close()
+
+
 if __name__ == "__main__":
     unittest.main()

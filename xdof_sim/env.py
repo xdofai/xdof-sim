@@ -222,12 +222,14 @@ class MuJoCoYAMEnv(gym.Env):
         self._scene_xml_string = xml_string
         self._close_camera_backend()
         self.setup_model()
+        self._task_evaluator = make_task_evaluator(self.model, self._task_spec)
 
     def reload_from_model(self, model: mujoco.MjModel) -> None:
         """Swap in a copy of an already-compiled MuJoCo model."""
         self._scene_xml_string = None
         self._close_camera_backend()
         self._bind_model(copy.deepcopy(model))
+        self._task_evaluator = make_task_evaluator(self.model, self._task_spec)
 
     def _reset_camera_backend(self) -> None:
         if self._camera_provider is not None:
@@ -321,6 +323,14 @@ class MuJoCoYAMEnv(gym.Env):
         self._reset_camera_backend()
         if self._task_evaluator is not None:
             self._task_evaluator.reset(nworld=1)
+            if self._last_randomization is not None and hasattr(
+                self._task_evaluator, "set_active_trash_joints"
+            ):
+                trash_joints = getattr(self._last_randomization, "metadata", {}).get(
+                    "trash_joints"
+                )
+                if trash_joints is not None:
+                    self._task_evaluator.set_active_trash_joints(trash_joints)
 
         self.cur_step = 0
         info: dict[str, Any] = {}
