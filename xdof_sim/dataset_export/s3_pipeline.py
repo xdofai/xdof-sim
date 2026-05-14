@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import socket
+import time
 from typing import Any
 import traceback
 
@@ -128,6 +129,157 @@ class _ShardStatusWriter:
             print(f"[s3-export] Warning: failed to upload shard status: {exc}")
 
 
+_PHASE_CODES = {
+    "initializing": 0,
+    "resuming": 1,
+    "starting": 2,
+    "running": 3,
+    "staging": 4,
+    "exporting": 5,
+    "uploading": 6,
+    "writing_metadata": 7,
+    "complete": 8,
+    "complete_with_failures": 9,
+}
+
+
+class _WandbShardLogger:
+    """Best-effort W&B progress logger for one dataset export shard."""
+
+    def __init__(
+        self,
+        *,
+        enabled: bool,
+        entity: str | None,
+        project: str | None,
+        group: str | None,
+        run_name: str | None,
+        log_interval_s: float,
+        shard_index: int,
+        num_shards: int,
+        config: ExportConfig,
+        source_prefix: str,
+        output_root: str,
+    ) -> None:
+        self.run = None
+        self.log_interval_s = max(0.0, float(log_interval_s))
+        self.last_log_at = 0.0
+        self.started_at = time.time()
+        self._last_step = -1
+        self._finish_payload: dict[str, Any] | None = None
+        if not enabled:
+            return
+
+        try:
+            import wandb
+
+            self.run = wandb.init(
+                entity=entity or None,
+                project=project or "FAR-abc",
+                group=group or config.batch_name,
+                name=run_name or f"{config.batch_name}-shard-{_shard_tag(shard_index, num_shards)}",
+                tags=["sim rendering"],
+                config={
+                    "source_prefix": source_prefix,
+                    "output_root": output_root,
+                    "batch_name": config.batch_name,
+                    "render_backend": config.render_backend,
+                    "image_width": config.image_width,
+                    "image_height": config.image_height,
+                    "fps": config.fps,
+                    "sim_batch_size": config.sim_batch_size,
+                    "gpu_id": config.gpu_id,
+                    "shard_index": shard_index,
+                    "num_shards": num_shards,
+                    "hostname": socket.gethostname(),
+                    "skypilot_node_rank": os.environ.get("SKYPILOT_NODE_RANK"),
+                    "skypilot_job_rank": os.environ.get("SKYPILOT_JOB_RANK"),
+                    "skypilot_num_nodes": os.environ.get("SKYPILOT_NUM_NODES"),
+                    "skypilot_num_jobs": os.environ.get("SKYPILOT_NUM_JOBS"),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - W&B should not kill exports
+            print(f"[wandb] init failed; continuing without W&B progress: {exc}")
+
+    def _metrics(self, payload: dict[str, Any]) -> dict[str, float | int]:
+        assigned = int(payload.get("assigned_episodes") or 0)
+        discovered = int(payload.get("discovered_episodes") or 0)
+        attempted = int(payload.get("attempted_episodes") or 0)
+        completed = int(payload.get("completed_episodes") or 0)
+        failed = int(payload.get("failed_episodes") or 0)
+        skipped = int(payload.get("skipped_existing") or 0)
+        processed = min(assigned, completed + failed) if assigned else completed + failed
+        remaining = max(0, assigned - processed)
+        runtime_s = max(0.0, time.time() - self.started_at)
+        episodes_per_s = processed / runtime_s if runtime_s > 0 and processed > 0 else 0.0
+        eta_s = remaining / episodes_per_s if episodes_per_s > 0 else 0.0
+        progress_fraction = float(processed) / float(assigned) if assigned > 0 else 1.0
+        phase = str(payload.get("phase") or "")
+        current_episode = payload.get("current_episode")
+        return {
+            "node/jobs_completed": completed,
+            "node/jobs_failed": failed,
+            "node/jobs_processed": processed,
+            "node/jobs_total": assigned,
+            "node/jobs_remaining": remaining,
+            "node/progress_fraction": progress_fraction,
+            "node/runtime_s": runtime_s,
+            "node/eta_s": eta_s,
+            "node/jobs_per_hour": episodes_per_s * 3600.0,
+            "node/phase_code": int(_PHASE_CODES.get(phase, -1)),
+            "node/has_current_episode": int(bool(current_episode)),
+            "shard/completed_episodes": completed,
+            "shard/failed_episodes": failed,
+            "shard/processed_episodes": processed,
+            "shard/assigned_episodes": assigned,
+            "shard/discovered_episodes": discovered,
+            "shard/attempted_episodes": attempted,
+            "shard/skipped_existing": skipped,
+            "shard/remaining_episodes": remaining,
+            "shard/progress_fraction": progress_fraction,
+            "shard/runtime_s": runtime_s,
+            "shard/eta_s": eta_s,
+            "shard/episodes_per_hour": episodes_per_s * 3600.0,
+            "shard/phase_code": int(_PHASE_CODES.get(phase, -1)),
+        }
+
+    def _step(self, payload: dict[str, Any]) -> int:
+        completed = int(payload.get("completed_episodes") or 0)
+        failed = int(payload.get("failed_episodes") or 0)
+        return completed + failed
+
+    def maybe_log(self, payload: dict[str, Any], *, force: bool = False) -> None:
+        if self.run is None:
+            return
+        now = time.time()
+        if not force and now - self.last_log_at < self.log_interval_s:
+            return
+        metrics = self._metrics(payload)
+        step = max(self._last_step, self._step(payload))
+        try:
+            self.run.log(metrics, step=step)
+            self.last_log_at = now
+            self._last_step = step
+            self._finish_payload = dict(payload)
+        except Exception as exc:  # noqa: BLE001 - W&B should not kill exports
+            print(f"[wandb] progress log failed: {exc}")
+
+    def finish(self, payload: dict[str, Any] | None = None, *, exit_code: int = 0) -> None:
+        if self.run is None:
+            return
+        final_payload = payload or self._finish_payload
+        try:
+            if final_payload is not None:
+                self.maybe_log(final_payload, force=True)
+                metrics = self._metrics(final_payload)
+                for key, value in metrics.items():
+                    if key.startswith("shard/"):
+                        self.run.summary[f"final/{key}"] = value
+            self.run.finish(exit_code=exit_code)
+        except Exception as exc:  # noqa: BLE001 - W&B should not kill exports
+            print(f"[wandb] finish failed: {exc}")
+
+
 def _load_remote_json_if_exists(
     s3_output_root: str,
     filename: str,
@@ -163,6 +315,12 @@ def export_s3_shard(
     output_region: str | None = None,
     max_episodes: int | None = None,
     resume_existing: bool = False,
+    wandb_enabled: bool = False,
+    wandb_entity: str | None = "far-wandb",
+    wandb_project: str | None = "FAR-abc",
+    wandb_group: str | None = None,
+    wandb_run_name: str | None = None,
+    wandb_log_interval_s: float = 30.0,
 ) -> dict[str, Any]:
     """Run one shard of source-S3 -> local export -> destination-S3 upload."""
     discovered = discover_episode_sources(
@@ -199,10 +357,29 @@ def export_s3_shard(
         output_aws_profile=output_aws_profile,
         output_region=output_region,
     )
-    status.update(
+    wandb_logger = _WandbShardLogger(
+        enabled=wandb_enabled,
+        entity=wandb_entity,
+        project=wandb_project,
+        group=wandb_group,
+        run_name=wandb_run_name,
+        log_interval_s=wandb_log_interval_s,
+        shard_index=shard_index,
+        num_shards=num_shards,
+        config=config,
+        source_prefix=s3_input_prefix,
+        output_root=s3_output_root,
+    )
+
+    def update_status(*, force_wandb: bool = False, **updates: Any) -> None:
+        status.update(**updates)
+        wandb_logger.maybe_log(status.payload, force=force_wandb)
+
+    update_status(
         phase="resuming" if resume_existing else "starting",
         discovered_episodes=len(discovered),
         assigned_episodes=len(assigned),
+        force_wandb=True,
     )
     existing_collected: dict[str, dict] = {}
     existing_camera_profiles: dict[str, dict] = {}
@@ -234,12 +411,13 @@ def export_s3_shard(
     collected: dict[str, dict] = dict(existing_collected)
     camera_profiles: dict[str, dict] = dict(existing_camera_profiles)
     failures: list[dict[str, str]] = []
-    status.update(
+    update_status(
         phase="running" if assigned_to_run else "complete",
         skipped_existing=len(already_exported),
         attempted_episodes=len(assigned_to_run),
         completed_episodes=len(collected),
         failed_episodes=0,
+        force_wandb=True,
     )
     if assigned_to_run:
         upload_data_root = dataset_root / "data"
@@ -283,7 +461,7 @@ def export_s3_shard(
                     {metadata["episode_id"]: metadata},
                     kind="episode metadata",
                 )
-                status.update(
+                update_status(
                     phase="running",
                     completed_episodes=len(collected),
                     failed_episodes=len(failures),
@@ -301,7 +479,7 @@ def export_s3_shard(
                         "traceback": traceback.format_exc(),
                     }
                 )
-                status.update(
+                update_status(
                     phase="running",
                     completed_episodes=len(collected),
                     failed_episodes=len(failures),
@@ -330,13 +508,13 @@ def export_s3_shard(
                     next_source = assigned_to_run[index + 1] if index + 1 < len(assigned_to_run) else None
                     pending_stage = submit_stage(executor, next_source)
 
-                    status.update(
+                    update_status(
                         phase="staging",
                         current_episode=source.episode_name,
                         current_episode_prefix=source.episode_prefix,
                     )
                     staged_dir = stage_future.result()
-                    status.update(
+                    update_status(
                         phase="exporting",
                         current_episode=source.episode_name,
                         current_episode_prefix=source.episode_prefix,
@@ -362,7 +540,7 @@ def export_s3_shard(
                             aws_region=output_region,
                         ),
                     )
-                    status.update(
+                    update_status(
                         phase="uploading",
                         current_episode=metadata["episode_id"],
                         current_episode_prefix=source.episode_prefix,
@@ -377,7 +555,7 @@ def export_s3_shard(
                             "traceback": traceback.format_exc(),
                         }
                     )
-                    status.update(
+                    update_status(
                         phase="running",
                         completed_episodes=len(collected),
                         failed_episodes=len(failures),
@@ -393,12 +571,13 @@ def export_s3_shard(
 
             finalize_upload()
 
-    status.update(
+    update_status(
         phase="writing_metadata",
         completed_episodes=len(collected),
         failed_episodes=len(failures),
         current_episode=None,
         current_episode_prefix=None,
+        force_wandb=True,
     )
     collected_path = write_json(metadata_root / f"collected_shard_{shard_tag}.json", collected)
     copy_local_file_to_s3(
@@ -434,14 +613,16 @@ def export_s3_shard(
             aws_region=output_region,
         )
 
-    status.update(
+    update_status(
         phase="complete" if not failures else "complete_with_failures",
         completed_episodes=len(collected),
         failed_episodes=len(failures),
         current_episode=None,
         current_episode_prefix=None,
         finished_at=_utc_now_iso(),
+        force_wandb=True,
     )
+    wandb_logger.finish(status.payload, exit_code=0)
     return {
         "discovered_episodes": len(discovered),
         "assigned_episodes": len(assigned),

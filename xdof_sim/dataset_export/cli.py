@@ -35,6 +35,20 @@ def _add_render_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--action-pad-size", type=int, default=32)
 
 
+def _add_wandb_progress_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--wandb-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Log per-shard export progress to Weights & Biases.",
+    )
+    parser.add_argument("--wandb-entity", default="far-wandb")
+    parser.add_argument("--wandb-project", default="FAR-abc")
+    parser.add_argument("--wandb-group", default=None)
+    parser.add_argument("--wandb-run-name", default=None)
+    parser.add_argument("--wandb-log-interval", type=float, default=30.0)
+
+
 def _add_local_export_paths(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input-root", required=True, help="Root containing delivered episode dirs")
     parser.add_argument("--output-root", required=True, help="Local dataset root to write")
@@ -117,6 +131,7 @@ def main() -> None:
         help="Load existing shard metadata from the output root and skip already-exported episodes",
     )
     _add_render_config_args(s3_export_parser)
+    _add_wandb_progress_args(s3_export_parser)
 
     s3_finalize_parser = subparsers.add_parser(
         "s3-finalize",
@@ -221,6 +236,12 @@ def main() -> None:
             output_region=args.output_region,
             max_episodes=args.max_episodes,
             resume_existing=args.resume_existing,
+            wandb_enabled=args.wandb_enabled,
+            wandb_entity=args.wandb_entity,
+            wandb_project=args.wandb_project,
+            wandb_group=args.wandb_group,
+            wandb_run_name=args.wandb_run_name,
+            wandb_log_interval_s=args.wandb_log_interval,
         )
         print(json.dumps(summary, indent=2))
         return
