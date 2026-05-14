@@ -9,12 +9,16 @@ import numpy as np
 
 import xdof_sim
 from xdof_sim.randomization import (
+    ChessRandomizer,
     DishRackRandomizer,
     SweepRandomizer,
     WaterBottleRandomizer,
+    _CHESS_PIECE_JOINTS,
+    _build_chess_tin_scene_xml,
     _build_dishrack_scene_xml,
     _build_mug_scene_xml,
     _build_water_bottle_scene_xml,
+    _chess_tin_variant_names,
     _dishrack_geom_world_bounds,
     _dishrack_plate_body_name,
     _dishrack_plate_joint_name,
@@ -180,6 +184,413 @@ def _rotated_local_z_axis(quat: list[float]) -> np.ndarray:
         ],
         dtype=np.float64,
     )
+
+
+def _quat_dot_abs(quat_a: list[float], quat_b: list[float]) -> float:
+    return abs(float(np.dot(np.asarray(quat_a, dtype=np.float64), np.asarray(quat_b, dtype=np.float64))))
+
+
+def _yaw_from_quat(quat: list[float] | np.ndarray) -> float:
+    w, x, y, z = np.asarray(quat, dtype=np.float64)
+    return float(np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
+
+
+def _rotate_xy(vec: np.ndarray, yaw: float) -> np.ndarray:
+    c = float(np.cos(yaw))
+    s = float(np.sin(yaw))
+    return np.array([c * vec[0] - s * vec[1], s * vec[0] + c * vec[1]], dtype=np.float64)
+
+
+def _inside_chess_board(state: dict[str, dict[str, list[float]]], xy: list[float], margin: float = 0.025) -> bool:
+    board = state["chessboard"]
+    center = np.asarray(board["pos"][:2], dtype=np.float64)
+    local = _rotate_xy(np.asarray(xy, dtype=np.float64) - center, -_yaw_from_quat(board["quat"]))
+    half = ChessRandomizer._board_half + margin
+    return abs(float(local[0])) < half and abs(float(local[1])) < half
+
+
+def _inside_chess_tin(
+    state: dict[str, dict[str, list[float]]],
+    xy: list[float],
+    margin: float = 0.0,
+    inner_half_xy: list[float] | tuple[float, float] | None = None,
+) -> bool:
+    tin = state["tin_box_joint"]
+    center = np.asarray(tin["pos"][:2], dtype=np.float64)
+    local = _rotate_xy(np.asarray(xy, dtype=np.float64) - center, -_yaw_from_quat(tin["quat"]))
+    half_xy = inner_half_xy or ChessRandomizer._tin_inner_half_xy
+    return (
+        abs(float(local[0])) <= float(half_xy[0]) + margin
+        and abs(float(local[1])) <= float(half_xy[1]) + margin
+    )
+
+
+def _has_chess_piece_piece_contact(model: mujoco.MjModel, data: mujoco.MjData) -> bool:
+    piece_roots: set[int] = set()
+    for joint_name in _CHESS_PIECE_JOINTS:
+        jnt_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+        if jnt_id >= 0:
+            piece_roots.add(int(model.body_rootid[int(model.jnt_bodyid[jnt_id])]))
+
+    for contact_index in range(data.ncon):
+        contact = data.contact[contact_index]
+        root_1 = int(model.body_rootid[int(model.geom_bodyid[contact.geom1])])
+        root_2 = int(model.body_rootid[int(model.geom_bodyid[contact.geom2])])
+        if root_1 != root_2 and root_1 in piece_roots and root_2 in piece_roots:
+            return True
+    return False
+
+
+def _chess_tin_collision_flags(model: mujoco.MjModel) -> list[tuple[int, int]]:
+    flags: list[tuple[int, int]] = []
+    for geom_name in (
+        "tin_box_floor",
+        "tin_box_wall_y_pos",
+        "tin_box_wall_y_neg",
+        "tin_box_wall_x_pos",
+        "tin_box_wall_x_neg",
+    ):
+        geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
+        if geom_id >= 0:
+            flags.append((int(model.geom_contype[geom_id]), int(model.geom_conaffinity[geom_id])))
+    return flags
+
+
+class ChessSetupRandomizationTests(unittest.TestCase):
+    def _assert_chess_steps_stable(self, env, *, steps: int = 30) -> None:
+        for _ in range(steps):
+            mujoco.mj_step(env.model, env.data)
+            self.assertTrue(np.isfinite(env.data.qpos).all())
+            self.assertTrue(np.isfinite(env.data.qvel).all())
+            self.assertTrue(np.isfinite(env.data.qacc).all())
+            self.assertLess(float(np.nanmax(np.abs(env.data.qacc))), 1e8)
+
+    def _reset_chess(
+        self,
+        *,
+        scenario: str,
+        target_count: int,
+        color_mode: str = "mixed_partial",
+        seed: int = 3,
+    ):
+        env = xdof_sim.make_env(task="chess", render_cameras=False)
+        env.reset(
+            seed=seed,
+            randomize=True,
+            options={
+                "randomization": {
+                    "scenario": scenario,
+                    "target_count": target_count,
+                    "color_mode": color_mode,
+                    "randomize_scales": False,
+                }
+            },
+        )
+        state = env._last_randomization
+        self.assertIsNotNone(state)
+        assert state is not None
+        return env, state
+
+    def test_chess_table_setup_places_targets_off_board_and_records_metadata(self) -> None:
+        env, state = self._reset_chess(
+            scenario="table_setup",
+            target_count=12,
+            color_mode="white_only",
+            seed=10,
+        )
+        try:
+            metadata = state.metadata
+            self.assertEqual(metadata["scenario"], "table_setup")
+            self.assertEqual(metadata["target_count"], 12)
+            self.assertEqual(metadata["target_colors"], ["white"])
+            self.assertEqual(len(metadata["target_poses"]), 12)
+            self.assertEqual(len(metadata["board_target_poses"]), len(_CHESS_PIECE_JOINTS))
+            self.assertFalse(metadata["tin_active"])
+            self.assertNotIn("tin_pose", metadata)
+            self.assertIn("tin_box_joint", state.object_states)
+            self.assertLess(state.object_states["tin_box_joint"]["pos"][2], -1.0)
+            self.assertEqual(set(_chess_tin_collision_flags(env.model)), {(0, 0)})
+
+            board_joint_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_JOINT, "chessboard")
+            self.assertGreaterEqual(board_joint_id, 0)
+            self.assertEqual(env.model.jnt_type[board_joint_id], mujoco.mjtJoint.mjJNT_FREE)
+
+            target_joints = set(metadata["target_joints"])
+            staged_abs_y = []
+            for joint_name in target_joints:
+                piece_state = state.object_states[joint_name]
+                staged_abs_y.append(abs(piece_state["pos"][1]))
+                self.assertGreater(abs(piece_state["pos"][1]), 0.28)
+                self.assertFalse(
+                    _inside_chess_board(
+                        state.object_states,
+                        piece_state["pos"][:2],
+                        margin=ChessRandomizer._table_stage_board_margin,
+                    )
+                )
+            self.assertLess(min(staged_abs_y), 0.42)
+
+            for joint_name in metadata["non_target_pieces"]:
+                piece_state = state.object_states[joint_name]
+                board_target_pose = metadata["board_target_poses"][joint_name]
+                distance = np.linalg.norm(
+                    np.asarray(piece_state["pos"][:2], dtype=np.float64)
+                    - np.asarray(board_target_pose["pos"][:2], dtype=np.float64)
+                )
+                self.assertLess(distance, 1e-9)
+                self.assertTrue(_inside_chess_board(state.object_states, piece_state["pos"][:2], margin=0.05))
+
+            self.assertFalse(_has_chess_piece_piece_contact(env.model, env.data))
+            self._assert_chess_steps_stable(env)
+        finally:
+            env.close()
+
+    def test_chess_knocked_setup_places_targets_near_board_squares_non_upright(self) -> None:
+        env, state = self._reset_chess(
+            scenario="knocked_setup",
+            target_count=8,
+            color_mode="black_only",
+            seed=11,
+        )
+        try:
+            metadata = state.metadata
+            self.assertEqual(metadata["scenario"], "knocked_setup")
+            self.assertEqual(metadata["target_count"], 8)
+            self.assertEqual(metadata["target_colors"], ["black"])
+            self.assertFalse(metadata["tin_active"])
+            self.assertNotIn("tin_pose", metadata)
+            self.assertLess(state.object_states["tin_box_joint"]["pos"][2], -1.0)
+            self.assertEqual(set(_chess_tin_collision_flags(env.model)), {(0, 0)})
+
+            board_center_xy = np.mean(
+                [
+                    np.asarray(pose["pos"][:2], dtype=np.float64)
+                    for pose in metadata["board_target_poses"].values()
+                ],
+                axis=0,
+            )
+            for joint_name in metadata["target_joints"]:
+                piece_state = state.object_states[joint_name]
+                target_pose = metadata["target_poses"][joint_name]
+                distance_to_target = np.linalg.norm(
+                    np.asarray(piece_state["pos"][:2], dtype=np.float64)
+                    - np.asarray(target_pose["pos"][:2], dtype=np.float64)
+                )
+                distance_to_center = np.linalg.norm(
+                    np.asarray(piece_state["pos"][:2], dtype=np.float64) - board_center_xy
+                )
+                self.assertGreater(distance_to_target, 0.035)
+                self.assertLess(distance_to_center, 0.18)
+                self.assertLess(_quat_dot_abs(piece_state["quat"], target_pose["quat"]), 0.97)
+                self.assertTrue(_inside_chess_board(state.object_states, piece_state["pos"][:2], margin=0.05))
+
+            self._assert_chess_steps_stable(env)
+        finally:
+            env.close()
+
+    def test_chess_tin_setup_places_targets_inside_free_jointed_tin(self) -> None:
+        env, state = self._reset_chess(
+            scenario="tin_setup",
+            target_count=16,
+            color_mode="both_broad",
+            seed=12,
+        )
+        try:
+            metadata = state.metadata
+            self.assertEqual(metadata["scenario"], "tin_setup")
+            self.assertEqual(metadata["target_count"], 16)
+            self.assertEqual(set(metadata["target_colors"]), {"black", "white"})
+            self.assertTrue(metadata["tin_active"])
+            self.assertIn("tin_pose", metadata)
+            self.assertEqual(_chess_tin_variant_names(), ["tin_2"])
+            self.assertEqual(metadata["tin_variant"], "tin_2")
+            self.assertGreater(metadata["tin_scale"], 1.0)
+            self.assertIn("tin_outer_half_xy", metadata)
+            self.assertEqual(set(state.scale_states), set())
+            self.assertEqual(set(_chess_tin_collision_flags(env.model)), {(1, 1)})
+
+            tin_z = state.object_states["tin_box_joint"]["pos"][2]
+            self.assertGreater(tin_z - ChessRandomizer._tin_floor_half_z, 0.75)
+            for joint_name in metadata["target_joints"]:
+                piece_state = state.object_states[joint_name]
+                self.assertTrue(
+                    _inside_chess_tin(
+                        state.object_states,
+                        piece_state["pos"][:2],
+                        margin=0.01,
+                        inner_half_xy=metadata["tin_inner_half_xy"],
+                    )
+                )
+                self.assertGreater(piece_state["pos"][2], metadata["tin_floor_z"])
+
+            self.assertFalse(_has_chess_piece_piece_contact(env.model, env.data))
+        finally:
+            env.close()
+
+    def test_chess_tin_scene_builder_uses_tin_2_body_variant(self) -> None:
+        self.assertEqual(_chess_tin_variant_names(), ["tin_2"])
+        for variant in _chess_tin_variant_names():
+            xml = _build_chess_tin_scene_xml(
+                tin_variant=variant,
+                scale_states={},
+                base_scene_xml=None,
+                base_scene_dir=None,
+            )
+            self.assertIn(f"/{variant}/body/", xml)
+            model = mujoco.MjModel.from_xml_string(xml)
+            tin_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "tin_box")
+            tin_joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "tin_box_joint")
+            self.assertGreaterEqual(tin_body, 0)
+            self.assertGreaterEqual(tin_joint, 0)
+            mesh_names = [model.mesh(index).name for index in range(model.nmesh)]
+            self.assertTrue(
+                any(name.startswith(f"chess_tin_{variant}") for name in mesh_names),
+                msg=f"missing prefixed mesh for {variant}",
+            )
+
+    def test_chess_scale_randomization_is_off_by_default(self) -> None:
+        env = xdof_sim.make_env(task="chess", render_cameras=False)
+        try:
+            env.reset(
+                seed=13,
+                randomize=True,
+                options={
+                    "randomization": {
+                        "scenario": "table_setup",
+                        "target_count": 6,
+                        "color_mode": "mixed_partial",
+                    }
+                },
+            )
+            state = env._last_randomization
+            self.assertIsNotNone(state)
+            assert state is not None
+            self.assertEqual(state.scale_states, {})
+        finally:
+            env.close()
+
+    def test_chess_scale_randomization_can_be_enabled_explicitly(self) -> None:
+        env = xdof_sim.make_env(task="chess", render_cameras=False)
+        try:
+            env.reset(
+                seed=14,
+                randomize=True,
+                options={
+                    "randomization": {
+                        "scenario": "table_setup",
+                        "target_count": 6,
+                        "color_mode": "mixed_partial",
+                        "randomize_scales": True,
+                    }
+                },
+            )
+            state = env._last_randomization
+            self.assertIsNotNone(state)
+            assert state is not None
+            self.assertEqual(set(state.scale_states), set(_CHESS_PIECE_JOINTS))
+            self.assertTrue(any(abs(scale - 1.0) > 1e-6 for scale in state.scale_states.values()))
+        finally:
+            env.close()
+
+    def test_chess_asset_debug_cycles_scenario_color_mode_and_tin(self) -> None:
+        env = xdof_sim.make_env(task="chess", render_cameras=False)
+        try:
+            debug_options = {
+                "randomization": {
+                    "randomize_variants": False,
+                    "randomize_scales": False,
+                }
+            }
+            env.reset(seed=20, randomize=True, options=debug_options)
+            state = env._last_randomization
+            self.assertIsNotNone(state)
+            assert state is not None
+            self.assertEqual(state.metadata["scenario"], "table_setup")
+            self.assertEqual(state.metadata["color_mode"], "white_only")
+            self.assertEqual(state.metadata["target_count"], ChessRandomizer.target_count_range[0])
+            self.assertEqual(state.metadata["tin_variant"], "tin_2")
+            self.assertEqual(state.scale_states, {})
+
+            env.reset(
+                seed=21,
+                randomize=True,
+                options={
+                    "randomization": {
+                        "randomize_variants": False,
+                        "randomize_scales": False,
+                        "cycle_scenario": 1,
+                    }
+                },
+            )
+            state = env._last_randomization
+            self.assertIsNotNone(state)
+            assert state is not None
+            self.assertEqual(state.metadata["scenario"], "knocked_setup")
+            self.assertEqual(state.metadata["color_mode"], "white_only")
+            self.assertEqual(state.metadata["target_count"], ChessRandomizer.target_count_range[0])
+            self.assertEqual(state.metadata["tin_variant"], "tin_2")
+
+            env.reset(
+                seed=22,
+                randomize=True,
+                options={
+                    "randomization": {
+                        "randomize_variants": False,
+                        "randomize_scales": False,
+                        "cycle_color_mode": 1,
+                    }
+                },
+            )
+            state = env._last_randomization
+            self.assertIsNotNone(state)
+            assert state is not None
+            self.assertEqual(state.metadata["scenario"], "knocked_setup")
+            self.assertEqual(state.metadata["color_mode"], "black_only")
+            self.assertEqual(state.metadata["target_count"], ChessRandomizer.target_count_range[0])
+            self.assertEqual(state.metadata["tin_variant"], "tin_2")
+        finally:
+            env.close()
+
+    def test_chess_reuses_model_when_asset_selection_is_unchanged(self) -> None:
+        env = xdof_sim.make_env(task="chess", render_cameras=False)
+        try:
+            reset_options = {
+                "randomization": {
+                    "randomize_variants": False,
+                    "randomize_scales": False,
+                }
+            }
+            initial_model = env.model
+            env.reset(seed=30, randomize=True, options=reset_options)
+            self.assertIs(env.model, initial_model)
+            env.reset(seed=31, randomize=True, options=reset_options)
+            self.assertIs(env.model, initial_model)
+            env.reset(
+                seed=32,
+                randomize=True,
+                options={
+                    "randomization": {
+                        "randomize_variants": False,
+                        "randomize_scales": False,
+                        "cycle_scenario": 1,
+                    }
+                },
+            )
+            self.assertIs(env.model, initial_model)
+        finally:
+            env.close()
+
+    def test_chess2_keeps_legacy_scatter_randomizer(self) -> None:
+        env = xdof_sim.make_env(task="chess2", render_cameras=False)
+        try:
+            env.reset(seed=4, randomize=True)
+            state = env._last_randomization
+            self.assertIsNotNone(state)
+            assert state is not None
+            self.assertEqual(state.metadata, {})
+            self.assertNotIn("tin_box_joint", state.object_states)
+        finally:
+            env.close()
 
 
 class SweepRandomizerTests(unittest.TestCase):

@@ -53,7 +53,25 @@ from xdof_sim.teleop.episode_recorder import TeleopEpisodeRecorder
 # ---------------------------------------------------------------------------
 
 _DEFAULT_VISIBLE_GROUPS = (0, 1, 2)
-_AGGREGATE_EXPORT_ROOTS = frozenset({"dishrack", "plate"})
+_AGGREGATE_EXPORT_ROOTS = frozenset({"dishrack", "plate", "tin_box"})
+_HIDDEN_BODY_EXPORT_Z = -1.0
+
+
+def _should_export_scene_after_reset(
+    *,
+    previous_model: mujoco.MjModel,
+    current_model: mujoco.MjModel,
+    task: str,
+    previous_metadata: dict[str, object] | None,
+    current_metadata: dict[str, object] | None,
+) -> bool:
+    if current_model is not previous_model:
+        return True
+    if task != "chess":
+        return False
+    previous_tin_active = bool((previous_metadata or {}).get("tin_active", False))
+    current_tin_active = bool((current_metadata or {}).get("tin_active", False))
+    return previous_tin_active != current_tin_active
 
 
 def _parse_visible_groups_arg(values: list[str] | None) -> tuple[int, ...]:
@@ -425,6 +443,8 @@ def _collect_export_entries(model, data, visible_groups: set[int]) -> list[dict[
 
     entries: list[dict[str, object]] = []
     for root_body_id in sorted(grouped_geoms, key=lambda body_id: _body_name(model, body_id)):
+        if float(data.xpos[root_body_id][2]) < _HIDDEN_BODY_EXPORT_Z:
+            continue
         body_key = _body_name(model, root_body_id)
         geom_ids = list(grouped_geoms[root_body_id])
         signatures = sorted(
@@ -716,6 +736,10 @@ function isPutBottlesDebugTask() {
   return task === 'put_bottles' || task === 'water_bottles';
 }
 
+function isChessDebugTask() {
+  return window.__ASSET_DEBUG_TASK__ === 'chess';
+}
+
 function updateAssetInfo(randomization) {
   if (!window.__ASSET_DEBUG__) {
     assetInfo.style.display = 'none';
@@ -732,6 +756,17 @@ function updateAssetInfo(randomization) {
     assetInfo.style.display = 'block';
     assetInfo.textContent =
       `Bottles (${bottleCount}): ${bottleVariants}\nBin scale: ${binScale}\nX: next bottle\nY: previous bottle\nB/Space: reset`;
+    return;
+  }
+  if (isChessDebugTask()) {
+    const scenario = randomization?.scenario || '?';
+    const colorMode = randomization?.color_mode || '?';
+    const tinVariant = randomization?.tin_variant || '?';
+    const targetCount = randomization?.target_count ?? '?';
+    const scaleCount = randomization?.scale_count ?? 0;
+    assetInfo.style.display = 'block';
+    assetInfo.textContent =
+      `Chess scenario: ${scenario}\nColor mode: ${colorMode}\nTin: ${tinVariant}\nTargets: ${targetCount}\nScaled pieces: ${scaleCount}\nX: next scenario\nY: next color mode\nB/Space: reset`;
     return;
   }
   const plate = randomization?.plate_variant || '?';
@@ -1070,7 +1105,6 @@ const faceButtonHeld = { rightB: false, leftX: false, leftY: false };
 function assetDebugRequest(extra = {}) {
   return {
     randomize_variants: false,
-    randomize_scales: false,
     ...extra,
   };
 }
@@ -1091,6 +1125,8 @@ window.addEventListener('keydown', (event) => {
     event.preventDefault();
     if (isPutBottlesDebugTask()) {
       requestSceneReset('keyboard_x', assetDebugRequest({ cycle_bottle: 1 }));
+    } else if (isChessDebugTask()) {
+      requestSceneReset('keyboard_x', assetDebugRequest({ cycle_scenario: 1 }));
     } else {
       requestSceneReset('keyboard_x', assetDebugRequest({ cycle_plate: 1 }));
     }
@@ -1100,6 +1136,8 @@ window.addEventListener('keydown', (event) => {
     event.preventDefault();
     if (isPutBottlesDebugTask()) {
       requestSceneReset('keyboard_y', assetDebugRequest({ cycle_bottle: -1 }));
+    } else if (isChessDebugTask()) {
+      requestSceneReset('keyboard_y', assetDebugRequest({ cycle_color_mode: 1 }));
     } else {
       requestSceneReset('keyboard_y', assetDebugRequest({ cycle_dish_rack: 1 }));
     }
@@ -1192,6 +1230,8 @@ renderer.setAnimationLoop(() => {
     if (leftXPressed && !faceButtonHeld.leftX) {
       if (isPutBottlesDebugTask()) {
         requestSceneReset('controller_x', assetDebugRequest({ cycle_bottle: 1 }));
+      } else if (isChessDebugTask()) {
+        requestSceneReset('controller_x', assetDebugRequest({ cycle_scenario: 1 }));
       } else {
         requestSceneReset('controller_x', assetDebugRequest({ cycle_plate: 1 }));
       }
@@ -1202,6 +1242,8 @@ renderer.setAnimationLoop(() => {
     if (leftYPressed && !faceButtonHeld.leftY) {
       if (isPutBottlesDebugTask()) {
         requestSceneReset('controller_y', assetDebugRequest({ cycle_bottle: -1 }));
+      } else if (isChessDebugTask()) {
+        requestSceneReset('controller_y', assetDebugRequest({ cycle_color_mode: 1 }));
       } else {
         requestSceneReset('controller_y', assetDebugRequest({ cycle_dish_rack: 1 }));
       }
@@ -1301,8 +1343,24 @@ def main():
         "--asset-debug",
         action="store_true",
         help=(
-            "Asset debug mode for dishrack/put_bottles: keep variants pinned on reset "
-            "and map X/Y to cycle task asset variants."
+            "Asset debug mode for dishrack/put_bottles/chess: keep variants or "
+            "scenario settings pinned on reset and map X/Y to cycle debug choices."
+        ),
+    )
+    parser.add_argument(
+        "--no-randomize-scales",
+        action="store_true",
+        help=(
+            "Disable per-reset object scale randomization in VR. This avoids "
+            "rebuilding/exporting scene meshes on tasks whose scale changes are XML-based."
+        ),
+    )
+    parser.add_argument(
+        "--randomize-scales",
+        action="store_true",
+        help=(
+            "Explicitly enable per-reset object scale randomization. This is useful "
+            "for tasks such as chess where scales are disabled by default for faster resets."
         ),
     )
     parser.add_argument(
@@ -1316,8 +1374,13 @@ def main():
         visible_groups = set(_parse_visible_groups_arg(args.visible_groups))
     except ValueError as exc:
         parser.error(str(exc))
-    if args.asset_debug and args.task not in {"dishrack", "put_bottles"}:
-        parser.error("--asset-debug is currently only supported for task='dishrack' or task='put_bottles'")
+    if args.asset_debug and args.task not in {"dishrack", "put_bottles", "chess"}:
+        parser.error(
+            "--asset-debug is currently only supported for "
+            "task='dishrack', task='put_bottles', or task='chess'"
+        )
+    if args.no_randomize_scales and args.randomize_scales:
+        parser.error("--randomize-scales and --no-randomize-scales cannot be used together")
 
     if args.record_dir and args.mocap:
         raise SystemExit("--record-dir is only supported in GELLO mode, not --mocap mode")
@@ -1382,14 +1445,23 @@ def main():
     else:
         env = xdof_sim.make_env(scene="hybrid", task=args.task, render_cameras=False)
 
+    base_randomization_request: dict[str, object] = {}
+    if args.no_randomize_scales:
+        base_randomization_request["randomize_scales"] = False
+    elif args.randomize_scales:
+        base_randomization_request["randomize_scales"] = True
+
     initial_reset_options = None
     if args.asset_debug:
-        initial_reset_options = {
-            "randomization": {
+        initial_request = dict(base_randomization_request)
+        initial_request.update(
+            {
                 "randomize_variants": False,
-                "randomize_scales": False,
             }
-        }
+        )
+        initial_reset_options = {"randomization": initial_request}
+    elif base_randomization_request:
+        initial_reset_options = {"randomization": dict(base_randomization_request)}
 
     # Reset once up front so the live model matches the first randomization.
     obs, _ = env.reset(options=initial_reset_options)
@@ -1579,6 +1651,10 @@ def main():
         bottle_variant = metadata.get("bottle_variant")
         bottle_variants = metadata.get("bottle_variants")
         bottle_count = metadata.get("bottle_count")
+        chess_scenario = metadata.get("scenario")
+        chess_color_mode = metadata.get("color_mode")
+        chess_target_count = metadata.get("target_count")
+        chess_tin_variant = metadata.get("tin_variant")
         if (
             plate_variant is None
             and dish_rack_variant is None
@@ -1586,6 +1662,10 @@ def main():
             and trash_count is None
             and bottle_variant is None
             and bottle_count is None
+            and chess_scenario is None
+            and chess_color_mode is None
+            and chess_target_count is None
+            and chess_tin_variant is None
         ):
             return None
         payload = {
@@ -1596,12 +1676,18 @@ def main():
             "bottle_variant": str(bottle_variant or ""),
             "bottle_variants": [str(value) for value in bottle_variants] if isinstance(bottle_variants, (list, tuple)) else [],
             "bottle_count": int(bottle_count) if bottle_count is not None else None,
+            "scenario": str(chess_scenario or ""),
+            "color_mode": str(chess_color_mode or ""),
+            "tin_variant": str(chess_tin_variant or ""),
+            "target_count": int(chess_target_count) if chess_target_count is not None else None,
         }
         bin_scale = scale_states.get("bin_joint")
         if bin_scale is not None:
             payload["bin_scale"] = round(float(bin_scale), 3)
         elif bottle_variant is not None or bottle_count is not None:
             payload["bin_scale"] = 1.0
+        if chess_scenario is not None or chess_color_mode is not None:
+            payload["scale_count"] = len(scale_states)
         if trash_count is not None:
             payload["trash_count"] = int(trash_count)
         return payload
@@ -1623,9 +1709,16 @@ def main():
     def reset_scene(randomization_request: dict[str, object] | None = None) -> None:
         nonlocal state
         previous_model = current_model()
+        previous_randomization = getattr(env, "_last_randomization", None)
+        previous_metadata = getattr(previous_randomization, "metadata", None)
+        if not isinstance(previous_metadata, dict):
+            previous_metadata = None
         options = None
+        merged_randomization_request = dict(base_randomization_request)
         if randomization_request:
-            options = {"randomization": dict(randomization_request)}
+            merged_randomization_request.update(randomization_request)
+        if merged_randomization_request:
+            options = {"randomization": merged_randomization_request}
         obs, _ = env.reset(
             seed=int(time.time_ns() % (2**31 - 1)),
             options=options,
@@ -1633,7 +1726,17 @@ def main():
         state = obs["state"].copy()
         step_count[0] = 0
         gripper_ids[0] = find_gripper_ids(current_model())
-        if current_model() is not previous_model:
+        current_randomization = getattr(env, "_last_randomization", None)
+        current_metadata = getattr(current_randomization, "metadata", None)
+        if not isinstance(current_metadata, dict):
+            current_metadata = None
+        if _should_export_scene_after_reset(
+            previous_model=previous_model,
+            current_model=current_model(),
+            task=args.task,
+            previous_metadata=previous_metadata,
+            current_metadata=current_metadata,
+        ):
             export_current_scene_meshes()
             queue_client_event("scene_reload")
         else:

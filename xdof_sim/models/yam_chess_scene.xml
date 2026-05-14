@@ -46,6 +46,7 @@
     <material name="white" rgba="0.9 0.9 0.9 1"/>
     <material name="dark_piece" rgba="0.15 0.12 0.10 1" specular="0.6" shininess="0.8"/>
     <material name="light_piece" rgba="0.92 0.88 0.80 1" specular="0.6" shininess="0.8"/>
+    <material name="tin_box_mat" rgba="0.58 0.60 0.62 1" specular="0.4" shininess="0.7"/>
     <texture name="checker_board" type="2d" builtin="checker"
       rgb1="0.82 0.72 0.55" rgb2="0.35 0.22 0.12" width="512" height="512"/>
     <material name="board_mat" texture="checker_board" texrepeat="4 4" specular="0.3" shininess="0.5"/>
@@ -174,11 +175,103 @@
 
     <!-- ==================== CHESSBOARD ==================== -->
     <body name="chessboard" pos="0.6 0.0 0.75" euler="1.5708 0 0">
-      <geom name="board_geom" type="mesh" mesh="board" material="board_side_mat" mass="2.0"/>
+      <freejoint name="chessboard"/>
+      <geom name="board_geom" type="mesh" mesh="board" material="board_side_mat"
+        contype="0" conaffinity="0" density="0" group="2"/>
+      <geom name="board_collision" type="box" size="0.232 0.232 0.022"
+        pos="-0.006 0.022 -0.004" euler="-1.5708 0 0" mass="2.0"
+        friction="1.8 0.08 0.01" condim="6" solref="0.004 1"
+        solimp="0.998 0.998 0.001" priority="1" group="3" rgba="0 0 0 0"/>
       <!-- Checkerboard surface overlay (inside body so it moves with the board) -->
       <geom name="board_checker" type="box" size="0.224 0.224 0.001"
         pos="-0.006 0.043 -0.002" euler="-1.5708 0 0" material="board_mat"
-        contype="0" conaffinity="0" group="2"/>
+        contype="0" conaffinity="0" density="0" group="2"/>
+      <!-- Board square sites. These are in chessboard local coordinates and move with board randomization. -->
+      <site name="chess_square_r0_f0" pos="-0.193150 0.046901 0.182350" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r0_f1" pos="-0.193150 0.046900 0.128075" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r0_f2" pos="-0.193150 0.046900 0.078775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r0_f3" pos="-0.193150 0.046900 0.024075" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r0_f4" pos="-0.193150 0.046900 -0.027775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r0_f5" pos="-0.193150 0.046900 -0.080475" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r0_f6" pos="-0.193150 0.046900 -0.130175" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r0_f7" pos="-0.193150 0.046899 -0.183775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r1_f0" pos="-0.139934 0.046901 0.182350" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r1_f1" pos="-0.139934 0.046900 0.128075" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r1_f2" pos="-0.139934 0.046900 0.078775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r1_f3" pos="-0.139934 0.046900 0.024075" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r1_f4" pos="-0.139934 0.046900 -0.027775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r1_f5" pos="-0.139934 0.046900 -0.080475" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r1_f6" pos="-0.139934 0.046900 -0.130175" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r1_f7" pos="-0.139934 0.046899 -0.183775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r2_f0" pos="-0.086718 0.046901 0.182350" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r2_f1" pos="-0.086718 0.046900 0.128075" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r2_f2" pos="-0.086718 0.046900 0.078775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r2_f3" pos="-0.086718 0.046900 0.024075" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r2_f4" pos="-0.086718 0.046900 -0.027775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r2_f5" pos="-0.086718 0.046900 -0.080475" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r2_f6" pos="-0.086718 0.046900 -0.130175" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r2_f7" pos="-0.086718 0.046899 -0.183775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r3_f0" pos="-0.033502 0.046901 0.182350" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r3_f1" pos="-0.033502 0.046900 0.128075" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r3_f2" pos="-0.033502 0.046900 0.078775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r3_f3" pos="-0.033502 0.046900 0.024075" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r3_f4" pos="-0.033502 0.046900 -0.027775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r3_f5" pos="-0.033502 0.046900 -0.080475" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r3_f6" pos="-0.033502 0.046900 -0.130175" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r3_f7" pos="-0.033502 0.046899 -0.183775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r4_f0" pos="0.019714 0.046901 0.182350" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r4_f1" pos="0.019714 0.046900 0.128075" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r4_f2" pos="0.019714 0.046900 0.078775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r4_f3" pos="0.019714 0.046900 0.024075" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r4_f4" pos="0.019714 0.046900 -0.027775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r4_f5" pos="0.019714 0.046900 -0.080475" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r4_f6" pos="0.019714 0.046900 -0.130175" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r4_f7" pos="0.019714 0.046899 -0.183775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r5_f0" pos="0.072930 0.046901 0.182350" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r5_f1" pos="0.072930 0.046900 0.128075" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r5_f2" pos="0.072930 0.046900 0.078775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r5_f3" pos="0.072930 0.046900 0.024075" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r5_f4" pos="0.072930 0.046900 -0.027775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r5_f5" pos="0.072930 0.046900 -0.080475" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r5_f6" pos="0.072930 0.046900 -0.130175" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r5_f7" pos="0.072930 0.046899 -0.183775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r6_f0" pos="0.126146 0.046901 0.182350" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r6_f1" pos="0.126146 0.046900 0.128075" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r6_f2" pos="0.126146 0.046900 0.078775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r6_f3" pos="0.126146 0.046900 0.024075" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r6_f4" pos="0.126146 0.046900 -0.027775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r6_f5" pos="0.126146 0.046900 -0.080475" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r6_f6" pos="0.126146 0.046900 -0.130175" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r6_f7" pos="0.126146 0.046899 -0.183775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r7_f0" pos="0.179363 0.046901 0.182350" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r7_f1" pos="0.179363 0.046900 0.128075" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r7_f2" pos="0.179363 0.046900 0.078775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r7_f3" pos="0.179363 0.046900 0.024075" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r7_f4" pos="0.179363 0.046900 -0.027775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r7_f5" pos="0.179363 0.046900 -0.080475" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r7_f6" pos="0.179363 0.046900 -0.130175" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+      <site name="chess_square_r7_f7" pos="0.179363 0.046899 -0.183775" size="0.004" rgba="0.1 0.7 1 0.35" group="4"/>
+    </body>
+
+    <!-- Placeholder open tin for chess setup randomization. Primitive geometry
+         keeps this replaceable by a scanned asset later. -->
+    <body name="tin_box" pos="0.6 0.460 0.757">
+      <freejoint name="tin_box_joint"/>
+      <geom name="tin_box_floor" type="box" size="0.245 0.120 0.006"
+        pos="0 0 0" material="tin_box_mat" mass="0.06"
+        friction="2.0 0.1 0.01" condim="6" solref="0.004 1" solimp="0.998 0.998 0.001"/>
+      <geom name="tin_box_wall_y_pos" type="box" size="0.245 0.0125 0.030"
+        pos="0 0.1075 0.036" material="tin_box_mat" mass="0.015"
+        friction="2.0 0.1 0.01" condim="6" solref="0.004 1" solimp="0.998 0.998 0.001"/>
+      <geom name="tin_box_wall_y_neg" type="box" size="0.245 0.0125 0.030"
+        pos="0 -0.1075 0.036" material="tin_box_mat" mass="0.015"
+        friction="2.0 0.1 0.01" condim="6" solref="0.004 1" solimp="0.998 0.998 0.001"/>
+      <geom name="tin_box_wall_x_pos" type="box" size="0.0125 0.095 0.030"
+        pos="0.2325 0 0.036" material="tin_box_mat" mass="0.015"
+        friction="2.0 0.1 0.01" condim="6" solref="0.004 1" solimp="0.998 0.998 0.001"/>
+      <geom name="tin_box_wall_x_neg" type="box" size="0.0125 0.095 0.030"
+        pos="-0.2325 0 0.036" material="tin_box_mat" mass="0.015"
+        friction="2.0 0.1 0.01" condim="6" solref="0.004 1" solimp="0.998 0.998 0.001"/>
     </body>
 
     <!-- ==================== CHESS PIECES ==================== -->

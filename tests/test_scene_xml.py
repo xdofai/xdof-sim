@@ -12,6 +12,8 @@ from xdof_sim.scene_xml import SceneXmlTransformOptions, build_scene_xml, transf
 from xdof_sim.randomization import (
     RandomizationState,
     _apply_object_scales_to_scene_xml,
+    _build_chess_tin_scene_xml,
+    _chess_tin_variant_names,
     _inhand_build_xml,
 )
 
@@ -107,6 +109,128 @@ class SceneXmlTests(unittest.TestCase):
         scene_path = self._models_dir() / "yam_inhand_transfer_base.xml"
         model = mujoco.MjModel.from_xml_path(str(scene_path))
         self.assertGreater(model.nbody, 0)
+
+    def test_chess_scene_includes_free_jointed_tin_box(self) -> None:
+        scene_path = self._models_dir() / "yam_chess_scene.xml"
+        model = mujoco.MjModel.from_xml_path(str(scene_path))
+        tin_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "tin_box")
+        tin_joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "tin_box_joint")
+        self.assertGreaterEqual(tin_body, 0)
+        self.assertGreaterEqual(tin_joint, 0)
+        self.assertGreater(float(model.body_pos[tin_body][2]), 0.75)
+
+    def test_chess_board_is_free_jointed_with_box_collision(self) -> None:
+        scene_path = self._models_dir() / "yam_chess_scene.xml"
+        model = mujoco.MjModel.from_xml_path(str(scene_path))
+        board_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "chessboard")
+        board_joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "chessboard")
+        board_collision = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "board_collision")
+        board_visual = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "board_geom")
+        board_checker = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "board_checker")
+
+        self.assertGreaterEqual(board_body, 0)
+        self.assertGreaterEqual(board_joint, 0)
+        self.assertEqual(model.jnt_type[board_joint], mujoco.mjtJoint.mjJNT_FREE)
+        self.assertAlmostEqual(float(model.body_mass[board_body]), 2.0, places=6)
+        self.assertGreaterEqual(board_collision, 0)
+        self.assertEqual(model.geom_type[board_collision], mujoco.mjtGeom.mjGEOM_BOX)
+        self.assertEqual(int(model.geom_contype[board_collision]), 1)
+        self.assertEqual(int(model.geom_conaffinity[board_collision]), 1)
+        for geom_id in (board_visual, board_checker):
+            self.assertGreaterEqual(geom_id, 0)
+            self.assertEqual(int(model.geom_contype[geom_id]), 0)
+            self.assertEqual(int(model.geom_conaffinity[geom_id]), 0)
+
+        data = mujoco.MjData(model)
+        mujoco.mj_forward(model, data)
+        collision_half_z = float(model.geom_size[board_collision][2])
+        collision_bottom_z = float(data.geom_xpos[board_collision][2] - collision_half_z)
+        collision_top_z = float(data.geom_xpos[board_collision][2] + collision_half_z)
+        checker_top_z = float(data.geom_xpos[board_checker][2] + model.geom_size[board_checker][2])
+        self.assertAlmostEqual(collision_bottom_z, 0.75, places=5)
+        self.assertAlmostEqual(collision_top_z, checker_top_z, places=5)
+
+    def test_chess_board_has_square_sites(self) -> None:
+        scene_path = self._models_dir() / "yam_chess_scene.xml"
+        model = mujoco.MjModel.from_xml_path(str(scene_path))
+        board_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "chessboard")
+        self.assertGreaterEqual(board_body, 0)
+
+        square_site_ids = [
+            site_id
+            for site_id in range(model.nsite)
+            if model.site(site_id).name.startswith("chess_square_r")
+        ]
+        self.assertEqual(len(square_site_ids), 64)
+        self.assertGreaterEqual(
+            mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "chess_square_r0_f0"),
+            0,
+        )
+        self.assertGreaterEqual(
+            mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "chess_square_r7_f7"),
+            0,
+        )
+        for site_id in square_site_ids:
+            self.assertEqual(int(model.site_bodyid[site_id]), board_body)
+            self.assertEqual(int(model.site_group[site_id]), 4)
+
+    def test_chess_tin_box_assets_compile(self) -> None:
+        tin_root = self._models_dir() / "assets" / "task_chess" / "tin_box"
+        expected_parts = tuple(
+            tin_root / variant / "body" / "body.xml"
+            for variant in _chess_tin_variant_names()
+        )
+        for xml_path in expected_parts:
+            model = mujoco.MjModel.from_xml_path(str(xml_path))
+            self.assertGreater(model.nmesh, 1, msg=str(xml_path))
+            self.assertGreater(model.ngeom, 1, msg=str(xml_path))
+            visible_collision_geoms = [
+                geom_id
+                for geom_id in range(model.ngeom)
+                if int(model.geom_group[geom_id]) == 3
+                and model.geom_type[geom_id] == mujoco.mjtGeom.mjGEOM_MESH
+                and int(model.geom_contype[geom_id]) == 0
+                and int(model.geom_conaffinity[geom_id]) == 0
+                and model.mesh(int(model.geom_dataid[geom_id])).name.startswith("body_collision_")
+            ]
+            self.assertEqual(len(visible_collision_geoms), 15)
+
+    def test_chess_tin_2_visual_collision_meshes_import_into_scene(self) -> None:
+        xml = _build_chess_tin_scene_xml(
+            tin_variant="tin_2",
+            scale_states={},
+            base_scene_xml=None,
+            base_scene_dir=None,
+        )
+        model = mujoco.MjModel.from_xml_string(xml)
+        visible_collision_geoms = [
+            geom_id
+            for geom_id in range(model.ngeom)
+            if int(model.geom_group[geom_id]) == 3
+            and model.geom_type[geom_id] == mujoco.mjtGeom.mjGEOM_MESH
+            and int(model.geom_contype[geom_id]) == 0
+            and int(model.geom_conaffinity[geom_id]) == 0
+            and model.mesh(int(model.geom_dataid[geom_id])).name.startswith("chess_tin_tin_2_body_collision_")
+        ]
+        self.assertEqual(len(visible_collision_geoms), 15)
+
+    def test_chess_generated_tin_body_variants_compile_in_scene(self) -> None:
+        for variant in _chess_tin_variant_names():
+            xml = _build_chess_tin_scene_xml(
+                tin_variant=variant,
+                scale_states={},
+                base_scene_xml=None,
+                base_scene_dir=None,
+            )
+            model = mujoco.MjModel.from_xml_string(xml)
+            tin_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "tin_box")
+            tin_joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "tin_box_joint")
+            self.assertGreaterEqual(tin_body, 0, msg=variant)
+            self.assertGreaterEqual(tin_joint, 0, msg=variant)
+            self.assertTrue(
+                any(model.mesh(index).name.startswith(f"chess_tin_{variant}") for index in range(model.nmesh)),
+                msg=variant,
+            )
 
     def test_inhand_transfer_generated_xml_loads_from_string(self) -> None:
         mesh_path = self._models_dir() / "assets" / "i2rt_yam" / "assets" / "base_visual_gate.stl"

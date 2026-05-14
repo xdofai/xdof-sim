@@ -1,0 +1,65 @@
+<mujoco model="body">
+  <default>
+    <default class="visual">
+      <geom group="2" type="mesh" contype="0" conaffinity="0" density="0" />
+    </default>
+    <default class="collision">
+      <geom group="3" type="mesh" density="100" friction="0.8 0.04 0.004" solref="0.004 1" solimp="0.998 0.998 0.001" condim="6" priority="1" />
+    </default>
+  </default>
+  <asset>
+    <texture type="2d" name="yellw" file="yellw.png" />
+    <material name="yellw" texture="yellw" specular="0.4000000000000001" shininess="0.001" />
+    <mesh file="body.obj" />
+    <mesh file="body_collision_0.obj" />
+    <mesh file="body_collision_1.obj" />
+    <mesh file="body_collision_2.obj" />
+    <mesh file="body_collision_3.obj" />
+    <mesh file="body_collision_4.obj" />
+    <mesh file="body_collision_5.obj" />
+    <mesh file="body_collision_6.obj" />
+    <mesh file="body_collision_7.obj" />
+    <mesh file="body_collision_8.obj" />
+    <mesh file="body_collision_9.obj" />
+    <mesh file="body_collision_10.obj" />
+    <mesh file="body_collision_11.obj" />
+    <mesh file="body_collision_12.obj" />
+    <mesh file="body_collision_13.obj" />
+    <mesh file="body_collision_14.obj" />
+  </asset>
+  <worldbody>
+    <body name="body">
+      <geom material="yellw" mesh="body" class="visual" />
+      <geom name="body_collision_0_visual" mesh="body_collision_0" class="visual" group="3" rgba="0.559229353 0.110064195 0.412509902 0.65" />
+      <geom name="body_collision_1_visual" mesh="body_collision_1" class="visual" group="3" rgba="0.478662402 0.071547707 0.734199353 0.65" />
+      <geom name="body_collision_2_visual" mesh="body_collision_2" class="visual" group="3" rgba="0.678140423 0.862653556 0.100633124 0.65" />
+      <geom name="body_collision_3_visual" mesh="body_collision_3" class="visual" group="3" rgba="0.391937363 0.259936019 0.450060588 0.65" />
+      <geom name="body_collision_4_visual" mesh="body_collision_4" class="visual" group="3" rgba="0.514130238 0.776470522 0.668540496 0.65" />
+      <geom name="body_collision_5_visual" mesh="body_collision_5" class="visual" group="3" rgba="0.176138256 0.571735391 0.022010909 0.65" />
+      <geom name="body_collision_6_visual" mesh="body_collision_6" class="visual" group="3" rgba="0.682331381 0.339505615 0.018195663 0.65" />
+      <geom name="body_collision_7_visual" mesh="body_collision_7" class="visual" group="3" rgba="0.995951041 0.229256499 0.641544188 0.65" />
+      <geom name="body_collision_8_visual" mesh="body_collision_8" class="visual" group="3" rgba="0.562995033 0.803718783 0.562758880 0.65" />
+      <geom name="body_collision_9_visual" mesh="body_collision_9" class="visual" group="3" rgba="0.403792452 0.930205352 0.256295326 0.65" />
+      <geom name="body_collision_10_visual" mesh="body_collision_10" class="visual" group="3" rgba="0.181159446 0.818687452 0.425243601 0.65" />
+      <geom name="body_collision_11_visual" mesh="body_collision_11" class="visual" group="3" rgba="0.529593963 0.631698536 0.923716640 0.65" />
+      <geom name="body_collision_12_visual" mesh="body_collision_12" class="visual" group="3" rgba="0.592335628 0.422893872 0.779715531 0.65" />
+      <geom name="body_collision_13_visual" mesh="body_collision_13" class="visual" group="3" rgba="0.103337407 0.234761138 0.437160482 0.65" />
+      <geom name="body_collision_14_visual" mesh="body_collision_14" class="visual" group="3" rgba="0.412307931 0.850582223 0.019595705 0.65" />
+      <geom mesh="body_collision_0" rgba="0.8 0.8 0.8 0" class="collision" />
+      <geom mesh="body_collision_1" rgba="0.8 0.8 0.8 0" class="collision" />
+      <geom mesh="body_collision_2" rgba="0.8 0.8 0.8 0" class="collision" />
+      <geom mesh="body_collision_3" rgba="0.8 0.8 0.8 0" class="collision" />
+      <geom mesh="body_collision_4" rgba="0.8 0.8 0.8 0" class="collision" />
+      <geom mesh="body_collision_5" rgba="0.8 0.8 0.8 0" class="collision" />
+      <geom mesh="body_collision_6" rgba="0.8 0.8 0.8 0" class="collision" />
+      <geom mesh="body_collision_7" rgba="0.8 0.8 0.8 0" class="collision" />
+      <geom mesh="body_collision_8" rgba="0.8 0.8 0.8 0" class="collision" />
+      <geom mesh="body_collision_9" rgba="0.8 0.8 0.8 0" class="collision" />
+      <geom mesh="body_collision_10" rgba="0.8 0.8 0.8 0" class="collision" />
+      <geom mesh="body_collision_11" rgba="0.8 0.8 0.8 0" class="collision" />
+      <geom mesh="body_collision_12" rgba="0.8 0.8 0.8 0" class="collision" />
+      <geom mesh="body_collision_13" rgba="0.8 0.8 0.8 0" class="collision" />
+      <geom mesh="body_collision_14" rgba="0.8 0.8 0.8 0" class="collision" />
+    </body>
+  </worldbody>
+</mujoco>

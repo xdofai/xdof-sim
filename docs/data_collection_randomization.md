@@ -56,13 +56,14 @@ warning and keeps the last sampled placement anyway.
 ### Shared size randomization
 
 - All 10 collection families now apply a small multiplicative size perturbation
-  to movable free-jointed task objects.
+  to movable free-jointed task objects, except purpose-built containers such as
+  the chess tin placeholder.
 - The scale factor is sampled independently per movable object:
   `scale ~ U(0.95, 1.05)`.
 - This is implemented by regenerating the scene XML on reset, duplicating the
   referenced mesh assets for the affected object, and scaling both mesh assets
   and primitive geom sizes.
-- Fixed scene furniture that is only moved as a fixed body, such as the chess
+- Scene furniture that should keep fixed task dimensions, such as the chess
   board, drawer frame, dish rack, tray, and mug tree, is not size-randomized.
 - For `random_object_handover`, the imported handover object also gets its own
   `U(0.95, 1.05)` scale factor during XML construction.
@@ -72,9 +73,9 @@ warning and keeps the last sampled placement anyway.
 ### 1. Chess
 
 - Underlying randomizer: `ChessRandomizer`
-- Pairwise clearance: `0.056 m`
 - Randomized objects:
-  - `chessboard` as a fixed body
+  - `chessboard` as a 2 kg free-jointed board with box collision
+  - `tin_box` as a free-jointed generated tin body container
   - all 32 chess pieces as free-jointed objects
 
 #### Chessboard
@@ -83,23 +84,51 @@ warning and keeps the last sampled placement anyway.
 - `delta_y = [-0.10, 0.10]`
 - `delta_yaw = [-0.15, 0.15]`
 
-#### Pieces
+#### Setup Scenarios
 
-- Each piece starts with very large `delta_x = [-1.0, 1.0]`,
-  `delta_y = [-1.0, 1.0]`
-- In practice this means "anywhere on the table bounds" after clamping
-- Each piece also gets full default yaw randomization: `delta_yaw = [-pi, pi]`
+- The reset samples one of three scenarios:
+  - `table_setup` with target pieces staged off the board
+  - `knocked_setup` with target pieces knocked into a loose center-board cluster
+  - `tin_setup` with target pieces inside the free-jointed tin box
+- Scenario weights are `40% table_setup`, `30% knocked_setup`, `30% tin_setup`
+- Target count is sampled from `6` to `16`
+- Target pieces are sampled by color mode:
+  - white-only
+  - black-only
+  - mixed partial
+  - broad both-color
+- Non-target pieces remain upright on their correct transformed board squares
+- Piece scale randomization is disabled by default for this scene to keep
+  interactive resets fast. It can still be enabled explicitly with
+  `randomize_scales: true` in reset options or `--randomize-scales` in
+  `vr_streamer`.
 
 #### Custom logic
 
-- The board is sampled first
-- Each piece is then sampled with per-piece rejection until it is:
-  - outside the board's new footprint
-  - clear of all previously placed pieces
-- The board exclusion uses a board half-extent of `0.224 m` plus a
-  `0.05 m` margin
-- The per-piece off-board sampler allows up to `50` tries per piece before
-  falling back to the last sampled pose
+- The board is sampled first, then correct piece poses are transformed from the
+  XML starting setup into the board's randomized frame.
+- `table_setup` places target pieces into side-table staging slots, using
+  rejection against the randomized board footprint and previously placed
+  targets.
+- `knocked_setup` places target pieces as a loose knocked cluster near the
+  center of the board instead of leaving them at their correct squares.
+- `tin_setup` places target pieces in a grid-like loose pile inside the tin.
+- The board XML includes one group-4 site per checkerboard square. These sites
+  live under the board body, so future reward checks can use them after board
+  position/yaw randomization.
+- The tin body uses the generated `tin_2/body/body.xml` asset. Only the body
+  is loaded; collision uses simple open-box walls/floor sized from that body so
+  pieces can be staged inside.
+- The tin is only active for `tin_setup`; in the other scenarios its freejoint
+  is parked far below the workspace and its collision geoms are disabled so it
+  is not visible or collidable.
+- Randomization metadata records the scenario, tin variant, target
+  joints/colors, color mode, staged target poses, and the full transformed
+  board target pose map for debugging and future evaluation.
+- `vr_streamer --asset-debug --task chess` pins the current scenario, color
+  mode, target count, and tin variant. In that mode, `X` cycles scenario and
+  `Y` cycles color mode.
+- `chess2` intentionally keeps the older scatter-off-board randomizer.
 
 ### 2. Spelling With Blocks
 
