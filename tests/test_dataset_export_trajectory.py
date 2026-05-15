@@ -184,6 +184,64 @@ class ExportTrajectoryTests(unittest.TestCase):
         )
         self.assertEqual(mj_set_state_mock.call_count, 4)
 
+    @mock.patch("xdof_sim.dataset_export.trajectory.mujoco.mj_forward", autospec=True)
+    @mock.patch("xdof_sim.dataset_export.trajectory.mujoco.mj_setState", autospec=True)
+    @mock.patch("xdof_sim.dataset_export.trajectory.mujoco.mj_stateSize", autospec=True)
+    def test_delivered_command_state_alignment_ignores_pre_command_sim_time(
+        self,
+        mj_state_size_mock,
+        mj_set_state_mock,
+        _mj_forward_mock,
+    ) -> None:
+        context = make_context()
+        context = EpisodeContext(
+            **{
+                **context.__dict__,
+                "raw_sim_integration_states": np.array(
+                    [
+                        [0.0, 0.0, 0.0],
+                        [10.0, 100.0, 1000.0],
+                        [20.0, 200.0, 2000.0],
+                        [30.0, 300.0, 3000.0],
+                    ],
+                    dtype=np.float64,
+                ),
+                "raw_sim_integration_timestamps": np.array([30.736, 0.034, 0.534, 1.034], dtype=np.float64),
+                "raw_sim_integration_wallclock_timestamps": np.array(
+                    [1_700_000_000.0, 1_700_000_000.28, 1_700_000_000.78, 1_700_000_001.28],
+                    dtype=np.float64,
+                ),
+                "raw_sim_state_spec": 16383,
+            }
+        )
+        env = FakeIntegrationEnv()
+        mj_state_size_mock.return_value = 3
+
+        def _fake_set_state(_model, data, state, _spec):
+            data.qpos[:] = np.array(
+                [state[0], state[1], state[2], state[0] + 1.0, 9.0],
+                dtype=np.float64,
+            )
+
+        mj_set_state_mock.side_effect = _fake_set_state
+
+        traj = build_export_trajectory(context, env, fps=4.0)
+
+        self.assertEqual(traj.state_source, "integration_state.npy")
+        np.testing.assert_allclose(traj.timestamps, np.array([0.0, 0.25, 0.5, 0.75]))
+        np.testing.assert_allclose(
+            traj.qpos,
+            np.array(
+                [
+                    [10.0, 100.0, 1000.0, 11.0, 9.0],
+                    [10.0, 100.0, 1000.0, 11.0, 9.0],
+                    [20.0, 200.0, 2000.0, 21.0, 9.0],
+                    [20.0, 200.0, 2000.0, 21.0, 9.0],
+                ],
+                dtype=np.float32,
+            ),
+        )
+
     def test_normalize_integration_timestamps_zero_bases_subsecond_delivered_sim_time(self) -> None:
         context = make_context()
         context = EpisodeContext(
@@ -222,18 +280,19 @@ class ExportTrajectoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "sim-time and wallclock elapsed clocks disagree"):
             normalize_integration_timestamps(context)
 
-    def test_build_export_trajectory_rejects_integration_state_without_timestamps(self) -> None:
+    def test_build_export_trajectory_rejects_delivered_command_state_without_wallclock(self) -> None:
         context = make_context()
         context = EpisodeContext(
             **{
                 **context.__dict__,
-                "raw_sim_integration_states": np.zeros((3, 3), dtype=np.float64),
+                "raw_sim_integration_states": np.zeros((4, 3), dtype=np.float64),
                 "raw_sim_integration_timestamps": None,
+                "raw_sim_integration_wallclock_timestamps": None,
                 "raw_sim_state_spec": 16383,
             }
         )
 
-        with self.assertRaisesRegex(ValueError, "requires integration_state_sim_time.npy"):
+        with self.assertRaisesRegex(ValueError, "requires integration_state_wallclock.npy"):
             build_export_trajectory(context, FakeIntegrationEnv(), fps=4.0)
 
     def test_delivered_integration_timestamps_require_wallclock_validation(self) -> None:

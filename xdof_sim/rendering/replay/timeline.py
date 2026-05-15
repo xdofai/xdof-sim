@@ -121,12 +121,12 @@ def integration_states_on_action_clock(context: EpisodeContext) -> tuple[np.ndar
     if states is None:
         return None
 
-    integration_ts = normalize_delivered_integration_timestamps(context)
-    if integration_ts is None:
-        return None
     states = np.asarray(states, dtype=np.float64)
 
     if context.episode_format != "delivered":
+        integration_ts = normalize_delivered_integration_timestamps(context)
+        if integration_ts is None:
+            return None
         return states, integration_ts
 
     ts_left = _as_timestamp_array(context.streams.ts_left, label="left command-state")
@@ -149,28 +149,32 @@ def integration_states_on_action_clock(context: EpisodeContext) -> tuple[np.ndar
             f"integration={len(states)}, command={len(ts_left)}"
         )
 
-    if context.raw_sim_integration_wallclock_timestamps is not None:
-        wallclock = _as_timestamp_array(
-            context.raw_sim_integration_wallclock_timestamps,
-            label="integration-state wallclock",
+    if context.raw_sim_integration_wallclock_timestamps is None:
+        raise ValueError(
+            "Delivered command-state alignment requires integration_state_wallclock.npy "
+            "for post-step clock validation"
         )
-        if len(wallclock) != len(states):
-            raise ValueError(
-                "integration-state wallclock length mismatch: "
-                f"{len(wallclock)} vs {len(states)}"
-            )
-        command_elapsed = ts_left - ts_left[0]
-        post_step_elapsed = wallclock[1:] - wallclock[1]
-        positive_steps = np.diff(ts_left)
-        positive_steps = positive_steps[positive_steps > 1e-9]
-        median_step = float(np.median(positive_steps)) if len(positive_steps) else 0.0
-        tolerance_s = max(0.01, 0.25 * median_step)
-        max_error_s = float(np.max(np.abs(post_step_elapsed - command_elapsed)))
-        if max_error_s > tolerance_s:
-            raise ValueError(
-                "Delivered command-state and integration_state.npy post-step clocks disagree: "
-                f"max_error={max_error_s:.6f}s, tolerance={tolerance_s:.6f}s"
-            )
+    wallclock = _as_timestamp_array(
+        context.raw_sim_integration_wallclock_timestamps,
+        label="integration-state wallclock",
+    )
+    if len(wallclock) != len(states):
+        raise ValueError(
+            "integration-state wallclock length mismatch: "
+            f"{len(wallclock)} vs {len(states)}"
+        )
+    command_elapsed = ts_left - ts_left[0]
+    post_step_elapsed = wallclock[1:] - wallclock[1]
+    positive_steps = np.diff(ts_left)
+    positive_steps = positive_steps[positive_steps > 1e-9]
+    median_step = float(np.median(positive_steps)) if len(positive_steps) else 0.0
+    tolerance_s = max(0.01, 0.25 * median_step)
+    max_error_s = float(np.max(np.abs(post_step_elapsed - command_elapsed)))
+    if max_error_s > tolerance_s:
+        raise ValueError(
+            "Delivered command-state and integration_state.npy post-step clocks disagree: "
+            f"max_error={max_error_s:.6f}s, tolerance={tolerance_s:.6f}s"
+        )
 
     return states[1:], ts_left
 
