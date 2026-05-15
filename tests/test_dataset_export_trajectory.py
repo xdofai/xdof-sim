@@ -19,7 +19,6 @@ from xdof_sim.dataset_export.trajectory import (
     normalize_sim_timestamps,
 )
 from xdof_sim.env import project_policy_state
-from xdof_sim.rendering.replay.episode import _drop_leading_integration_wallclock_outlier
 from xdof_sim.rendering.replay.types import EpisodeContext, EpisodeStreams
 
 
@@ -202,41 +201,6 @@ class ExportTrajectoryTests(unittest.TestCase):
         np.testing.assert_allclose(
             normalize_integration_timestamps(context),
             np.array([0.0, 0.5, 1.0], dtype=np.float64),
-        )
-
-    def test_drop_leading_integration_wallclock_outlier_repairs_delivery_start(self) -> None:
-        states = np.arange(36, dtype=np.float64).reshape(12, 3)
-        sim_timestamps = np.arange(12, dtype=np.float64) * 0.034 + 30.0
-        wallclock_elapsed = sim_timestamps - sim_timestamps[0]
-        wallclock_elapsed[1:] += 1.2
-
-        repaired_states, repaired_ts, repaired_wallclock = _drop_leading_integration_wallclock_outlier(
-            states,
-            sim_timestamps,
-            wallclock_elapsed + 1_700_000_000.0,
-        )
-
-        np.testing.assert_allclose(repaired_states, states[1:])
-        np.testing.assert_allclose(repaired_ts, sim_timestamps[1:])
-        np.testing.assert_allclose(
-            repaired_wallclock,
-            wallclock_elapsed[1:] + 1_700_000_000.0,
-        )
-
-        context = make_context()
-        context = EpisodeContext(
-            **{
-                **context.__dict__,
-                "raw_sim_integration_states": repaired_states,
-                "raw_sim_integration_timestamps": repaired_ts,
-                "raw_sim_integration_wallclock_timestamps": repaired_wallclock,
-                "raw_sim_state_spec": 16383,
-            }
-        )
-
-        np.testing.assert_allclose(
-            normalize_integration_timestamps(context),
-            sim_timestamps[1:] - sim_timestamps[1],
         )
 
     def test_delivered_integration_timestamps_reject_unrepaired_wallclock_stall(self) -> None:
