@@ -154,15 +154,10 @@ def _local_scene_asset_root() -> Path:
     return Path(xdof_sim.__file__).resolve().parent / "models" / "assets"
 
 
-def _local_scene_models_root() -> Path:
-    return _local_scene_asset_root().parent
-
-
 def _normalize_recorded_scene_xml(xml: str) -> str:
     """Make recorded XML asset paths resolvable in the current checkout."""
     local_asset_root = _local_scene_asset_root().as_posix().rstrip("/") + "/"
     xml = _SCENE_ASSET_ROOT_RE.sub(local_asset_root, xml)
-    robocasa_root = (_local_scene_models_root() / "assets_robocasa").as_posix().rstrip("/") + "/"
 
     # Older delivered XMLs used human-readable dishrack asset directory names
     # from the collection checkout. This repo stores the same assets under the
@@ -179,24 +174,6 @@ def _normalize_recorded_scene_xml(xml: str) -> str:
                 f"task_dishrack/{kind}/{canonical}/",
             )
 
-    # Some delivered episodes reference task-local dishrack variant ids that
-    # were not copied into this checkout's task_dishrack namespace. Resolve
-    # those ids directly against the local RoboCasa asset checkout.
-    legacy_asset_prefixes = {
-        "task_dishrack/dish_rack/dish_rack_10/": (
-            "objects_lightwheel/lightwheel/dish_rack/DishRack044/"
-        ),
-        "task_dishrack/plate/plate_19/": (
-            "objaverse/objaverse/plate/plate_19/"
-        ),
-        "task_dishrack/plate/plate_20/": (
-            "objaverse/objaverse/plate/plate_20/"
-        ),
-    }
-    for legacy_prefix, robocasa_prefix in legacy_asset_prefixes.items():
-        replacement_prefix = robocasa_root + robocasa_prefix
-        xml = xml.replace(local_asset_root + legacy_prefix, replacement_prefix)
-        xml = xml.replace(f'file="{legacy_prefix}', f'file="{replacement_prefix}')
     return xml
 
 
@@ -215,6 +192,68 @@ def _mj_state_integration_spec() -> int:
     import mujoco
 
     return int(mujoco.mjtState.mjSTATE_INTEGRATION.value)
+
+
+def _drop_leading_integration_timestamp_outlier(
+    states: np.ndarray,
+    timestamps: np.ndarray | None,
+    wallclock_timestamps: np.ndarray | None,
+) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
+    if timestamps is None or len(timestamps) < 3:
+        return states, timestamps, wallclock_timestamps
+
+    diffs = np.diff(timestamps)
+    if not np.any(diffs < -1e-9):
+        return states, timestamps, wallclock_timestamps
+
+    if diffs[0] >= -1e-9 or np.any(diffs[1:] < -1e-9):
+        return states, timestamps, wallclock_timestamps
+
+    repaired_wallclock = (
+        wallclock_timestamps[1:]
+        if wallclock_timestamps is not None
+        else None
+    )
+    return states[1:], timestamps[1:], repaired_wallclock
+
+
+def _drop_leading_integration_wallclock_outlier(
+    states: np.ndarray,
+    timestamps: np.ndarray | None,
+    wallclock_timestamps: np.ndarray | None,
+) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
+    if timestamps is None or wallclock_timestamps is None or len(timestamps) < 3:
+        return states, timestamps, wallclock_timestamps
+
+    sim = np.asarray(timestamps, dtype=np.float64)
+    wallclock = np.asarray(wallclock_timestamps, dtype=np.float64)
+    sim_diffs = np.diff(sim)
+    wallclock_diffs = np.diff(wallclock)
+    if np.any(sim_diffs < -1e-9) or np.any(wallclock_diffs < -1e-9):
+        return states, timestamps, wallclock_timestamps
+
+    positive_steps = sim_diffs[sim_diffs > 1e-9]
+    if len(positive_steps) == 0:
+        return states, timestamps, wallclock_timestamps
+    median_step = float(np.median(positive_steps))
+    tolerance_s = max(0.05, 2.0 * median_step)
+
+    elapsed_error = (wallclock - wallclock[0]) - (sim - sim[0])
+    if float(np.max(np.abs(elapsed_error))) <= tolerance_s:
+        return states, timestamps, wallclock_timestamps
+
+    first_step_error = abs(float(wallclock_diffs[0] - sim_diffs[0]))
+    if first_step_error <= tolerance_s:
+        return states, timestamps, wallclock_timestamps
+
+    repaired_elapsed_error = (
+        (wallclock[1:] - wallclock[1])
+        - (sim[1:] - sim[1])
+    )
+    if float(np.max(np.abs(repaired_elapsed_error))) > tolerance_s:
+        return states, timestamps, wallclock_timestamps
+
+    return states[1:], timestamps[1:], wallclock_timestamps[1:]
 
 
 def load_integration_states(
@@ -253,6 +292,16 @@ def load_integration_states(
                 f"in {episode_dir}"
             )
 
+    states, timestamps, wallclock_timestamps = _drop_leading_integration_timestamp_outlier(
+        states,
+        timestamps,
+        wallclock_timestamps,
+    )
+    states, timestamps, wallclock_timestamps = _drop_leading_integration_wallclock_outlier(
+        states,
+        timestamps,
+        wallclock_timestamps,
+    )
     return states, timestamps, wallclock_timestamps, _mj_state_integration_spec()
 
 

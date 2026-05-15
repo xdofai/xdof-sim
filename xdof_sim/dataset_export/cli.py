@@ -31,6 +31,7 @@ def _add_render_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--sim-batch-size", type=int, default=32)
     parser.add_argument("--gpu-id", type=int, default=None)
     parser.add_argument("--max-episodes", type=int, default=None)
+    parser.add_argument("--max-episodes-per-task", type=int, default=None)
     parser.add_argument("--state-pad-size", type=int, default=32)
     parser.add_argument("--action-pad-size", type=int, default=32)
 
@@ -174,6 +175,7 @@ def main() -> None:
             Path(args.output_root),
             config=_config_from_args(args),
             max_episodes=args.max_episodes,
+            max_episodes_per_task=args.max_episodes_per_task,
         )
         return
 
@@ -235,6 +237,7 @@ def main() -> None:
             source_region=args.source_region,
             output_region=args.output_region,
             max_episodes=args.max_episodes,
+            max_episodes_per_task=args.max_episodes_per_task,
             resume_existing=args.resume_existing,
             wandb_enabled=args.wandb_enabled,
             wandb_entity=args.wandb_entity,
@@ -291,6 +294,7 @@ def main() -> None:
         Path(args.output_root),
         config=config,
         max_episodes=args.max_episodes,
+        max_episodes_per_task=args.max_episodes_per_task,
     )
     finalize_dataset_metadata(
         Path(args.output_root),

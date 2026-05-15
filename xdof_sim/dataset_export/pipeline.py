@@ -137,12 +137,26 @@ def export_dataset(
     *,
     config: ExportConfig,
     max_episodes: int | None = None,
+    max_episodes_per_task: int | None = None,
 ) -> dict[str, dict]:
     """Export all discovered delivered episodes and write collected.json."""
     output_root = Path(output_root)
     episode_dirs = find_episode_dirs(Path(input_root))
     if max_episodes is not None:
         episode_dirs = episode_dirs[:max_episodes]
+    if max_episodes_per_task is not None:
+        if max_episodes_per_task < 0:
+            raise ValueError("max_episodes_per_task must be non-negative")
+        counts: dict[str, int] = {}
+        selected: list[Path] = []
+        for episode_dir in episode_dirs:
+            task_name = episode_dir.parent.name
+            count = counts.get(task_name, 0)
+            if count >= max_episodes_per_task:
+                continue
+            selected.append(episode_dir)
+            counts[task_name] = count + 1
+        episode_dirs = selected
 
     collected: dict[str, dict] = {}
     camera_profiles: dict[str, dict] = {}

@@ -3273,20 +3273,41 @@ class PourRandomizer(SceneRandomizer):
         mug_dx = rng.uniform(*eff_dx)
         mug_dy = rng.uniform(*eff_dy)
         mug_new_pos = mug_nom_pos + np.array([mug_dx, mug_dy, 0.0])
-        q_yaw = _quat_from_yaw(rng.uniform(*mug_p.delta_yaw))
+        mug_yaw = float(rng.uniform(*mug_p.delta_yaw))
+        q_yaw = _quat_from_yaw(mug_yaw)
         states["mug_1_jnt"] = {
             "pos": mug_new_pos.tolist(),
             "quat": _quat_mul(q_yaw, mug_nom_quat).tolist(),
         }
 
-        # Move beads by the same (dx, dy) as the mug so they stay inside it.
+        # Keep beads in the sampled mug frame. Translating only by (dx, dy)
+        # leaves the bead pile behind when mug yaw/scale is randomized.
+        mug_scale = float(self._current_scale_states.get("mug_1_jnt", 1.0))
+        cos_yaw = float(np.cos(mug_yaw))
+        sin_yaw = float(np.sin(mug_yaw))
         for bead_name in self._bead_joints:
             if bead_name not in nominals:
                 continue
             bead_nom_pos, bead_nom_quat = nominals[bead_name]
+            offset = bead_nom_pos - mug_nom_pos
+            rotated_xy_offset = np.array(
+                [
+                    cos_yaw * offset[0] - sin_yaw * offset[1],
+                    sin_yaw * offset[0] + cos_yaw * offset[1],
+                ],
+                dtype=np.float64,
+            )
+            bead_new_pos = mug_new_pos + np.array(
+                [
+                    rotated_xy_offset[0] * mug_scale,
+                    rotated_xy_offset[1] * mug_scale,
+                    offset[2] * mug_scale,
+                ],
+                dtype=np.float64,
+            )
             states[bead_name] = {
-                "pos": (bead_nom_pos + np.array([mug_dx, mug_dy, 0.0])).tolist(),
-                "quat": bead_nom_quat.tolist(),
+                "pos": bead_new_pos.tolist(),
+                "quat": _quat_mul(q_yaw, bead_nom_quat).tolist(),
             }
 
         # Sample cup independently.
@@ -3306,6 +3327,16 @@ class PourRandomizer(SceneRandomizer):
         }
 
         return states
+
+    def _pairwise_ok(self, states: dict[str, dict[str, list[float]]]) -> bool:
+        # Beads are intentionally close together inside the mug. Only use the
+        # independently sampled containers for placement rejection.
+        container_states = {
+            name: states[name]
+            for name in ("mug_1_jnt", "cup_1_jnt")
+            if name in states
+        }
+        return super()._pairwise_ok(container_states)
 
     def randomize(
         self,
@@ -4906,16 +4937,6 @@ _MUG_FLIP_TRAY_MARGIN_M = 0.004
 _MUG_FLIP_TRAY_FLOOR_Z_OFFSET = 0.008
 _MUG_FLIP_SPAWN_CLEARANCE_M = 0.004
 _MUG_FLIP_MUG_MARGIN_M = 0.004
-_DISHRACK_ROBOCASA_VARIANT_DIRS: dict[str, dict[str, _Path]] = {
-    "dish_rack": {
-        "dish_rack_10": _LIGHTWHEEL_BASE / "dish_rack" / "DishRack044",
-    },
-    "plate": {
-        "plate_19": _OBJAVERSE_BASE / "plate" / "plate_19",
-        "plate_20": _OBJAVERSE_BASE / "plate" / "plate_20",
-    },
-}
-
 _OBJAVERSE_CATEGORIES = {"rolling_pin", "water_bottle", "can", "ladle"}
 # Approved object categories for the inhand_transfer task.
 # Edit this list to add/remove objects from the randomization pool.
@@ -4963,10 +4984,7 @@ def _dishrack_variant_dir(kind: str, variant_name: str) -> _Path:
     variant_name = _dishrack_canonical_variant_name(kind, variant_name)
     path = _DISHRACK_VARIANT_ROOTS[kind] / variant_name
     if not (path / "model.xml").exists():
-        fallback_path = _DISHRACK_ROBOCASA_VARIANT_DIRS.get(kind, {}).get(variant_name)
-        if fallback_path is None or not (fallback_path / "model.xml").exists():
-            raise FileNotFoundError(f"Missing {kind} variant model.xml: {path}")
-        return fallback_path
+        raise FileNotFoundError(f"Missing {kind} variant model.xml: {path}")
     return path
 
 
@@ -5006,7 +5024,6 @@ def _dishrack_normalize_plate_variants(
         )
 
     available = set(_dishrack_variant_names("plate"))
-    available.update(_DISHRACK_ROBOCASA_VARIANT_DIRS.get("plate", {}))
     invalid = [name for name in normalized if name not in available]
     if invalid:
         raise ValueError(

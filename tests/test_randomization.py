@@ -11,6 +11,7 @@ import xdof_sim
 from xdof_sim.randomization import (
     ChessRandomizer,
     DishRackRandomizer,
+    PourRandomizer,
     SweepRandomizer,
     WaterBottleRandomizer,
     _CHESS_PIECE_JOINTS,
@@ -699,6 +700,62 @@ class SweepRandomizerTests(unittest.TestCase):
 
         self.assertTrue(observed_counts.issubset({2, 3, 4}))
         self.assertGreaterEqual(len(observed_counts), 2)
+
+
+class PourRandomizerTests(unittest.TestCase):
+    def test_pairwise_check_ignores_clustered_beads(self) -> None:
+        randomizer = PourRandomizer()
+        states = {
+            "mug_1_jnt": {"pos": [0.45, 0.15, 0.80], "quat": [1.0, 0.0, 0.0, 0.0]},
+            "cup_1_jnt": {"pos": [0.70, 0.0, 0.80], "quat": [1.0, 0.0, 0.0, 0.0]},
+            "bead_1_jnt": {"pos": [0.45, 0.16, 0.83], "quat": [1.0, 0.0, 0.0, 0.0]},
+            "bead_2_jnt": {"pos": [0.451, 0.16, 0.83], "quat": [1.0, 0.0, 0.0, 0.0]},
+        }
+        self.assertTrue(randomizer._pairwise_ok(states))
+
+    def test_beads_follow_sampled_mug_yaw_and_scale(self) -> None:
+        randomizer = PourRandomizer()
+        randomizer._current_scale_states = {"mug_1_jnt": 0.95}
+        nominals = {
+            "mug_1_jnt": (
+                np.array([0.45, 0.15, 0.80], dtype=np.float64),
+                np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+            ),
+            "cup_1_jnt": (
+                np.array([0.70, 0.0, 0.80], dtype=np.float64),
+                np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+            ),
+            "bead_1_jnt": (
+                np.array([0.47, 0.15, 0.84], dtype=np.float64),
+                np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+            ),
+        }
+        states = randomizer._sample_once(nominals, np.random.default_rng(3))
+        mug_pos = np.asarray(states["mug_1_jnt"]["pos"], dtype=np.float64)
+        bead_pos = np.asarray(states["bead_1_jnt"]["pos"], dtype=np.float64)
+        offset = bead_pos - mug_pos
+
+        self.assertAlmostEqual(float(np.linalg.norm(offset[:2])), 0.02 * 0.95, places=6)
+        self.assertAlmostEqual(float(offset[2]), 0.04 * 0.95, places=6)
+
+    def test_pour_randomizer_finds_valid_container_placement_with_beads(self) -> None:
+        scene_path = Path(__file__).resolve().parents[1] / "xdof_sim" / "models" / "yam_pour_screw_scene.xml"
+        model = mujoco.MjModel.from_xml_path(str(scene_path))
+        data = mujoco.MjData(model)
+        randomizer = PourRandomizer()
+
+        for seed in range(8):
+            mujoco.mj_resetData(model, data)
+            mujoco.mj_forward(model, data)
+            with self.assertNoLogs("xdof_sim.randomization", level="WARNING"):
+                state = randomizer.randomize(model, data, seed=seed)
+            mug_xy = np.asarray(state.object_states["mug_1_jnt"]["pos"][:2], dtype=np.float64)
+            cup_xy = np.asarray(state.object_states["cup_1_jnt"]["pos"][:2], dtype=np.float64)
+            self.assertGreaterEqual(float(np.linalg.norm(mug_xy - cup_xy)), randomizer.min_clearance_m)
+
+            for bead_name in randomizer._bead_joints:
+                bead_xy = np.asarray(state.object_states[bead_name]["pos"][:2], dtype=np.float64)
+                self.assertLess(float(np.linalg.norm(bead_xy - mug_xy)), 0.04)
 
 
 class DishRackRandomizerBoundsTests(unittest.TestCase):

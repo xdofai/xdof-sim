@@ -13,6 +13,7 @@ from xdof_sim.rendering.replay.episode import (
     _load_direct_actions,
     _load_delivered_episode_streams,
     detect_episode_format,
+    load_integration_states,
     load_episode_context,
 )
 from xdof_sim.rendering.replay.runtime import create_replay_env
@@ -633,6 +634,31 @@ class DatasetEpisodeContextTests(unittest.TestCase):
             )
             np.testing.assert_allclose(context.initial_scene_integration_state, integration_state[0])
             self.assertEqual(context.raw_sim_state_spec, 16383)
+
+    def test_load_integration_states_drops_single_leading_timestamp_outlier(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode_dir = Path(tmpdir) / "episode_delivered"
+            episode_dir.mkdir()
+            integration_state = np.arange(16, dtype=np.float64).reshape(4, 4)
+            np.save(episode_dir / "integration_state.npy", integration_state)
+            np.save(
+                episode_dir / "integration_state_sim_time.npy",
+                np.array([3.0, 0.1, 0.2, 0.3], dtype=np.float64),
+            )
+            np.save(
+                episode_dir / "integration_state_wallclock.npy",
+                np.array([100.0, 100.1, 100.2, 100.3], dtype=np.float64),
+            )
+
+            states, timestamps, wallclock_timestamps, state_spec = load_integration_states(episode_dir)
+
+            np.testing.assert_allclose(states, integration_state[1:])
+            np.testing.assert_allclose(timestamps, np.array([0.1, 0.2, 0.3], dtype=np.float64))
+            np.testing.assert_allclose(
+                wallclock_timestamps,
+                np.array([100.1, 100.2, 100.3], dtype=np.float64),
+            )
+            self.assertEqual(state_spec, 16383)
 
     def test_delivered_integration_states_are_aligned_to_replay_grid(self) -> None:
         episode_dir = Path("/tmp/delivered_episode")

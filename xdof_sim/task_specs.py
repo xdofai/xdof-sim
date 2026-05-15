@@ -45,6 +45,19 @@ _TASK_SPECS: tuple[SimTaskSpec, ...] = (
         aliases=(
             "bottles",
             "sim_throw_plastic_bottles_in_bin",
+        ),
+    ),
+    SimTaskSpec(
+        name="put_plastic_bottles_in_bin",
+        env_task="put_bottles",
+        prompt="put the plastic bottles in the bin",
+        description="Put plastic bottles into the bin.",
+        aliases=(
+            "put_bottles",
+            "water_bottles",
+            "put plastic bottles in bin",
+            "put the plastic bottles in the bin",
+            "sim_put the plastic bottles in the bin",
             "sim_put_the_plastic_bottles_in_the_bin",
             "sim_put_the_plastic_bottles_in_bin",
         ),
@@ -77,13 +90,21 @@ _TASK_SPECS: tuple[SimTaskSpec, ...] = (
         name="hang_mug_on_mug_rack",
         env_task="mug_tree",
         prompt="hang mug on mug rack",
-        aliases=("sim_hang_mug_on_mug_rack", "mug_tree"),
+        aliases=(
+            "sim_hang_mug_on_mug_rack",
+            "sim_hang_the_mug_on_the_mug_rack",
+            "mug_tree",
+        ),
     ),
     SimTaskSpec(
         name="turn_mug_right_side_up",
         env_task="mug_flip",
         prompt="turn mug right side up",
-        aliases=("sim_turn_mug_right_side_up", "mug_flip"),
+        aliases=(
+            "sim_turn_mug_right_side_up",
+            "sim_turn_the_mug_right_side_up",
+            "mug_flip",
+        ),
     ),
     SimTaskSpec(
         name="sweep_away_paper_scraps_from_table",

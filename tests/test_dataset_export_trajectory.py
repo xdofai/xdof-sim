@@ -19,6 +19,7 @@ from xdof_sim.dataset_export.trajectory import (
     normalize_sim_timestamps,
 )
 from xdof_sim.env import project_policy_state
+from xdof_sim.rendering.replay.episode import _drop_leading_integration_wallclock_outlier
 from xdof_sim.rendering.replay.types import EpisodeContext, EpisodeStreams
 
 
@@ -203,6 +204,59 @@ class ExportTrajectoryTests(unittest.TestCase):
             np.array([0.0, 0.5, 1.0], dtype=np.float64),
         )
 
+    def test_drop_leading_integration_wallclock_outlier_repairs_delivery_start(self) -> None:
+        states = np.arange(36, dtype=np.float64).reshape(12, 3)
+        sim_timestamps = np.arange(12, dtype=np.float64) * 0.034 + 30.0
+        wallclock_elapsed = sim_timestamps - sim_timestamps[0]
+        wallclock_elapsed[1:] += 1.2
+
+        repaired_states, repaired_ts, repaired_wallclock = _drop_leading_integration_wallclock_outlier(
+            states,
+            sim_timestamps,
+            wallclock_elapsed + 1_700_000_000.0,
+        )
+
+        np.testing.assert_allclose(repaired_states, states[1:])
+        np.testing.assert_allclose(repaired_ts, sim_timestamps[1:])
+        np.testing.assert_allclose(
+            repaired_wallclock,
+            wallclock_elapsed[1:] + 1_700_000_000.0,
+        )
+
+        context = make_context()
+        context = EpisodeContext(
+            **{
+                **context.__dict__,
+                "raw_sim_integration_states": repaired_states,
+                "raw_sim_integration_timestamps": repaired_ts,
+                "raw_sim_integration_wallclock_timestamps": repaired_wallclock,
+                "raw_sim_state_spec": 16383,
+            }
+        )
+
+        np.testing.assert_allclose(
+            normalize_integration_timestamps(context),
+            sim_timestamps[1:] - sim_timestamps[1],
+        )
+
+    def test_delivered_integration_timestamps_reject_unrepaired_wallclock_stall(self) -> None:
+        context = make_context()
+        sim_timestamps = np.arange(12, dtype=np.float64) * 0.034
+        wallclock_elapsed = sim_timestamps.copy()
+        wallclock_elapsed[1:] += 1.2
+        context = EpisodeContext(
+            **{
+                **context.__dict__,
+                "raw_sim_integration_states": np.zeros((len(sim_timestamps), 3), dtype=np.float64),
+                "raw_sim_integration_timestamps": sim_timestamps + 30.0,
+                "raw_sim_integration_wallclock_timestamps": wallclock_elapsed + 1_700_000_000.0,
+                "raw_sim_state_spec": 16383,
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "sim-time and wallclock elapsed clocks disagree"):
+            normalize_integration_timestamps(context)
+
     def test_build_export_trajectory_rejects_integration_state_without_timestamps(self) -> None:
         context = make_context()
         context = EpisodeContext(
@@ -232,7 +286,7 @@ class ExportTrajectoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "requires integration_state_wallclock.npy"):
             normalize_integration_timestamps(context)
 
-    def test_delivered_integration_timestamps_reject_wallclock_elapsed_mismatch(self) -> None:
+    def test_delivered_integration_timestamps_reject_wallclock_length_mismatch(self) -> None:
         context = make_context()
         context = EpisodeContext(
             **{
@@ -240,14 +294,14 @@ class ExportTrajectoryTests(unittest.TestCase):
                 "raw_sim_integration_states": np.zeros((3, 3), dtype=np.float64),
                 "raw_sim_integration_timestamps": np.array([0.918, 1.418, 1.918], dtype=np.float64),
                 "raw_sim_integration_wallclock_timestamps": np.array(
-                    [1_700_000_000.0, 1_700_000_010.0, 1_700_000_020.0],
+                    [1_700_000_000.0, 1_700_000_000.5],
                     dtype=np.float64,
                 ),
                 "raw_sim_state_spec": 16383,
             }
         )
 
-        with self.assertRaisesRegex(ValueError, "sim-time and wallclock elapsed clocks disagree"):
+        with self.assertRaisesRegex(ValueError, "wallclock length mismatch"):
             normalize_integration_timestamps(context)
 
 

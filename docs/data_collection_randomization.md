@@ -418,16 +418,16 @@ warning and keeps the last sampled placement anyway.
 - Ten bead joints are tracked:
   - `bead_1_jnt` through `bead_10_jnt`
 - Beads are not independently sampled
-- Instead, every bead is translated by the same mug `(dx, dy)` so the beads
-  stay inside the mug after reset
-- Bead quaternions are kept at their nominal values
+- Instead, every bead keeps its nominal offset in the sampled mug frame, so the
+  bead pile follows mug translation, yaw, and mug scale
+- Bead quaternions follow the sampled mug yaw
 
 #### Custom logic
 
 - Only mug and cup count as the main randomized bodies for pairwise/contact
   checks
-- Mug and cup body colors are randomized with probability `1.0` from the
-  shared mug palette using materials:
+- The source container with beads and the receiving cup colors are randomized
+  with probability `1.0` from the shared mug palette using materials:
   - `mug_1_color`
   - `cup_body_color`
 

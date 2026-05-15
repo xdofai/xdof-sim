@@ -409,6 +409,24 @@ class SceneXmlTests(unittest.TestCase):
                     reference_finger,
                 )
 
+    def test_pour_source_container_uses_randomized_visible_material(self) -> None:
+        root = self._parse_xml("yam_pour_screw_scene.xml")
+        mug_body = self._find_body(root, "mug_1")
+        visible_geoms = [
+            geom
+            for geom in mug_body.findall("geom")
+            if geom.get("mesh", "").startswith("mug_vis_") and geom.get("group") == "2"
+        ]
+        hidden_visual_geoms = [
+            geom
+            for geom in mug_body.findall("geom")
+            if geom.get("mesh", "").startswith("mug_vis_") and geom.get("group") == "3"
+        ]
+        self.assertEqual(len(visible_geoms), 1)
+        for geom in visible_geoms:
+            self.assertEqual(geom.get("material"), "mug_1_color")
+        self.assertEqual(len(hidden_visual_geoms), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

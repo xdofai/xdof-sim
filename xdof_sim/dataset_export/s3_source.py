@@ -122,3 +122,50 @@ def shard_episode_sources(
         )
     ordered = sorted(sources, key=lambda source: source.relative_episode_prefix)
     return [source for idx, source in enumerate(ordered) if idx % num_shards == shard_index]
+
+
+def is_dataset_exportable_episode_source(source: S3EpisodeSource) -> bool:
+    """Return whether an episode has the files required by dataset export."""
+    files = source.file_map()
+    required = {
+        "output.mcap",
+        "integration_state.npy",
+        "integration_state_sim_time.npy",
+        "integration_state_wallclock.npy",
+    }
+    if not required.issubset(files):
+        return False
+    return "scene_assembled.xml" in files or "randomization.json" in files
+
+
+def filter_dataset_exportable_episode_sources(
+    sources: list[S3EpisodeSource],
+) -> list[S3EpisodeSource]:
+    """Drop delivered episodes that cannot produce exact rendered exports."""
+    return [
+        source
+        for source in sources
+        if is_dataset_exportable_episode_source(source)
+    ]
+
+
+def limit_episode_sources_per_delivery(
+    sources: list[S3EpisodeSource],
+    max_per_delivery: int | None,
+) -> list[S3EpisodeSource]:
+    """Keep at most N sorted episodes per source delivery/task."""
+    if max_per_delivery is None:
+        return list(sources)
+    if max_per_delivery < 0:
+        raise ValueError("max_per_delivery must be non-negative")
+
+    counts: dict[str, int] = {}
+    selected: list[S3EpisodeSource] = []
+    for source in sorted(sources, key=lambda item: item.relative_episode_prefix):
+        delivery = source.source_delivery
+        count = counts.get(delivery, 0)
+        if count >= max_per_delivery:
+            continue
+        selected.append(source)
+        counts[delivery] = count + 1
+    return selected

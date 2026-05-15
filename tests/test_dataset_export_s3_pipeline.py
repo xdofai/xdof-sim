@@ -98,8 +98,15 @@ class S3PipelineTests(unittest.TestCase):
 
             camera_profiles_path = Path(summary["camera_profiles_path"])
             self.assertTrue(camera_profiles_path.exists())
-            uploaded_names = sorted(Path(call.args[1]).name for call in upload_file.call_args_list)
-            self.assertEqual(uploaded_names, ["camera_profiles_shard_00.json", "collected_shard_00.json"])
+            uploaded_names = sorted(
+                Path(call.args[1]).name
+                for call in upload_file.call_args_list
+                if not Path(call.args[1]).name.startswith("status_shard_")
+            )
+            self.assertEqual(
+                uploaded_names,
+                ["camera_profiles_shard_00.json", "collected_shard_00.json"],
+            )
 
     def test_finalize_s3_dataset_merges_shards_downloads_numpy_and_uploads_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

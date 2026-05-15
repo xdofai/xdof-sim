@@ -29,8 +29,22 @@ class TaskSpecTests(unittest.TestCase):
         bottles = get_task_spec("sim_put the plastic bottles in the bin")
         self.assertEqual(pouring.name, "pouring")
         self.assertEqual(pouring.env_task, "pour")
-        self.assertEqual(bottles.name, "throw_plastic_bottles_in_bin")
-        self.assertEqual(bottles.env_task, "bottles")
+        self.assertEqual(bottles.name, "put_plastic_bottles_in_bin")
+        self.assertEqual(bottles.env_task, "put_bottles")
+        self.assertIsNone(bottles.evaluator_name)
+
+    def test_resolves_20260514_put_bottles_delivery_alias(self) -> None:
+        bottles = get_task_spec("sim_put_the_plastic_bottles_in_the_bin")
+        self.assertEqual(bottles.name, "put_plastic_bottles_in_bin")
+        self.assertEqual(bottles.env_task, "put_bottles")
+
+    def test_resolves_20260514_mug_delivery_aliases(self) -> None:
+        mug_tree = get_task_spec("sim_hang_the_mug_on_the_mug_rack")
+        mug_flip = get_task_spec("sim_turn_the_mug_right_side_up")
+        self.assertEqual(mug_tree.name, "hang_mug_on_mug_rack")
+        self.assertEqual(mug_tree.env_task, "mug_tree")
+        self.assertEqual(mug_flip.name, "turn_mug_right_side_up")
+        self.assertEqual(mug_flip.env_task, "mug_flip")
 
     def test_maybe_get_task_spec_returns_none_for_unknown(self) -> None:
         self.assertIsNone(maybe_get_task_spec("definitely_not_a_real_task"))

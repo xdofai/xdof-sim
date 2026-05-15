@@ -176,7 +176,7 @@
     <!-- ==================== TASK OBJECTS: Pour Task ==================== -->
     <body name="mug_1" pos="0.45 0.15 0.80">
       <freejoint name="mug_1_jnt"/>
-      <geom type="mesh" mesh="mug_vis_0" material="mug_white" mass="0.04" density="0" contype="0" conaffinity="0" group="2"/>
+      <geom type="mesh" mesh="mug_vis_0" material="mug_1_color" mass="0.04" density="0" contype="0" conaffinity="0" group="2"/>
       <geom type="mesh" mesh="mug_vis_1" material="mug_1_color" density="0" contype="0" conaffinity="0" group="3"/>
       <geom type="mesh" mesh="mug_col_0" class="mug_col"/>
       <geom type="mesh" mesh="mug_col_1" class="mug_col"/>

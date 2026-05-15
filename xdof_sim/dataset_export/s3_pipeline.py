@@ -15,7 +15,12 @@ import traceback
 
 from xdof_sim.dataset_export.metadata import finalize_dataset_metadata, write_json
 from xdof_sim.dataset_export.pipeline import export_episode_with_backend_lifecycle
-from xdof_sim.dataset_export.s3_source import discover_episode_sources, shard_episode_sources
+from xdof_sim.dataset_export.s3_source import (
+    discover_episode_sources,
+    filter_dataset_exportable_episode_sources,
+    limit_episode_sources_per_delivery,
+    shard_episode_sources,
+)
 from xdof_sim.dataset_export.s3_utils import (
     copy_local_dir_to_s3,
     copy_local_file_to_s3,
@@ -102,6 +107,8 @@ class _ShardStatusWriter:
             "updated_at": _utc_now_iso(),
             "phase": "initializing",
             "discovered_episodes": None,
+            "exportable_episodes": None,
+            "skipped_unexportable": 0,
             "assigned_episodes": None,
             "skipped_existing": 0,
             "attempted_episodes": 0,
@@ -204,6 +211,8 @@ class _WandbShardLogger:
     def _metrics(self, payload: dict[str, Any]) -> dict[str, float | int]:
         assigned = int(payload.get("assigned_episodes") or 0)
         discovered = int(payload.get("discovered_episodes") or 0)
+        exportable = int(payload.get("exportable_episodes") or 0)
+        skipped_unexportable = int(payload.get("skipped_unexportable") or 0)
         attempted = int(payload.get("attempted_episodes") or 0)
         completed = int(payload.get("completed_episodes") or 0)
         failed = int(payload.get("failed_episodes") or 0)
@@ -233,8 +242,10 @@ class _WandbShardLogger:
             "shard/processed_episodes": processed,
             "shard/assigned_episodes": assigned,
             "shard/discovered_episodes": discovered,
+            "shard/exportable_episodes": exportable,
             "shard/attempted_episodes": attempted,
             "shard/skipped_existing": skipped,
+            "shard/skipped_unexportable": skipped_unexportable,
             "shard/remaining_episodes": remaining,
             "shard/progress_fraction": progress_fraction,
             "shard/runtime_s": runtime_s,
@@ -314,6 +325,7 @@ def export_s3_shard(
     source_region: str | None = None,
     output_region: str | None = None,
     max_episodes: int | None = None,
+    max_episodes_per_task: int | None = None,
     resume_existing: bool = False,
     wandb_enabled: bool = False,
     wandb_entity: str | None = "far-wandb",
@@ -328,13 +340,15 @@ def export_s3_shard(
         aws_profile=source_aws_profile,
         aws_region=source_region,
     )
+    exportable = filter_dataset_exportable_episode_sources(discovered)
     assigned = shard_episode_sources(
-        discovered,
+        exportable,
         shard_index=shard_index,
         num_shards=num_shards,
     )
     if max_episodes is not None:
         assigned = assigned[:max_episodes]
+    assigned = limit_episode_sources_per_delivery(assigned, max_episodes_per_task)
 
     shard_root = Path(scratch_dir) / f"shard_{_shard_tag(shard_index, num_shards)}"
     if shard_root.exists():
@@ -378,6 +392,8 @@ def export_s3_shard(
     update_status(
         phase="resuming" if resume_existing else "starting",
         discovered_episodes=len(discovered),
+        exportable_episodes=len(exportable),
+        skipped_unexportable=len(discovered) - len(exportable),
         assigned_episodes=len(assigned),
         force_wandb=True,
     )
@@ -625,6 +641,8 @@ def export_s3_shard(
     wandb_logger.finish(status.payload, exit_code=0)
     return {
         "discovered_episodes": len(discovered),
+        "exportable_episodes": len(exportable),
+        "skipped_unexportable": len(discovered) - len(exportable),
         "assigned_episodes": len(assigned),
         "skipped_existing": len(already_exported),
         "attempted_episodes": len(assigned_to_run),
