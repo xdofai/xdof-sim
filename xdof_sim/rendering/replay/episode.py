@@ -719,14 +719,10 @@ def _load_delivered_episode_streams(
 
     print(f"Loading delivered episode: {episode_dir}")
 
-    left_leader_pos: list[list[float]] = []
-    left_leader_ts: list[float] = []
-    right_leader_pos: list[list[float]] = []
-    right_leader_ts: list[float] = []
-    left_eef_pos: list[list[float]] = []
-    left_eef_ts: list[float] = []
-    right_eef_pos: list[list[float]] = []
-    right_eef_ts: list[float] = []
+    left_command_pos: list[list[float]] = []
+    left_command_ts: list[float] = []
+    right_command_pos: list[list[float]] = []
+    right_command_ts: list[float] = []
     cam_data: dict[str, list[bytes]] = {}
     cam_ts_raw: dict[str, list[float]] = {}
     instruction = ""
@@ -750,50 +746,39 @@ def _load_delivered_episode_streams(
                 continue
             timestamp = ts.seconds + ts.nanos / 1e9
 
-            if topic == "/left-arm-leader":
-                left_leader_ts.append(timestamp)
-                left_leader_pos.append(list(decoded.position))
-            elif topic == "/right-arm-leader":
-                right_leader_ts.append(timestamp)
-                right_leader_pos.append(list(decoded.position))
-            elif topic == "/left-eef-leader":
-                left_eef_ts.append(timestamp)
-                left_eef_pos.append(list(decoded.position))
-            elif topic == "/right-eef-leader":
-                right_eef_ts.append(timestamp)
-                right_eef_pos.append(list(decoded.position))
+            if topic == "/left-command-state":
+                left_command_ts.append(timestamp)
+                left_command_pos.append(list(decoded.position))
+            elif topic == "/right-command-state":
+                right_command_ts.append(timestamp)
+                right_command_pos.append(list(decoded.position))
             elif load_recorded_cameras and topic in cam_topic_to_name:
                 cam_name = cam_topic_to_name[topic]
                 cam_data.setdefault(cam_name, []).append(bytes(decoded.data))
                 cam_ts_raw.setdefault(cam_name, []).append(timestamp)
 
-    if not left_leader_pos or not right_leader_pos:
-        raise ValueError(f"Delivered episode is missing leader action streams in {episode_dir}")
-    if not left_eef_pos or not right_eef_pos:
+    if not left_command_pos or not right_command_pos:
         raise ValueError(
-            f"Delivered episode is missing leader gripper streams (/left-eef-leader, /right-eef-leader) in {episode_dir}"
+            f"Delivered episode is missing command-state action streams "
+            f"(/left-command-state, /right-command-state) in {episode_dir}"
         )
 
-    left_leader = np.array(left_leader_pos, dtype=np.float64)
-    right_leader = np.array(right_leader_pos, dtype=np.float64)
-    ts_left_leader = np.array(left_leader_ts, dtype=np.float64)
-    ts_right_leader = np.array(right_leader_ts, dtype=np.float64)
-    left_eef = np.array(left_eef_pos, dtype=np.float64)
-    right_eef = np.array(right_eef_pos, dtype=np.float64)
-    ts_left_eef = np.array(left_eef_ts, dtype=np.float64)
-    ts_right_eef = np.array(right_eef_ts, dtype=np.float64)
-    left_gripper = sample_hold_align(left_eef[:, :1], ts_left_eef, ts_left_leader)
-    right_gripper = sample_hold_align(right_eef[:, :1], ts_right_eef, ts_right_leader)
-    actions_left = np.concatenate([left_leader, left_gripper], axis=1)
-    actions_right = np.concatenate([right_leader, right_gripper], axis=1)
+    actions_left = np.array(left_command_pos, dtype=np.float64)
+    actions_right = np.array(right_command_pos, dtype=np.float64)
+    ts_left_command = np.array(left_command_ts, dtype=np.float64)
+    ts_right_command = np.array(right_command_ts, dtype=np.float64)
+    if actions_left.ndim != 2 or actions_left.shape[1] != 7:
+        raise ValueError(f"Expected 7D /left-command-state in output.mcap, got shape {actions_left.shape}")
+    if actions_right.ndim != 2 or actions_right.shape[1] != 7:
+        raise ValueError(f"Expected 7D /right-command-state in output.mcap, got shape {actions_right.shape}")
 
-    duration_left = ts_left_leader[-1] - ts_left_leader[0]
-    duration_right = ts_right_leader[-1] - ts_right_leader[0]
-    hz_left = (len(ts_left_leader) - 1) / duration_left if duration_left > 0 else 0.0
-    hz_right = (len(ts_right_leader) - 1) / duration_right if duration_right > 0 else 0.0
+    duration_left = ts_left_command[-1] - ts_left_command[0]
+    duration_right = ts_right_command[-1] - ts_right_command[0]
+    hz_left = (len(ts_left_command) - 1) / duration_left if duration_left > 0 else 0.0
+    hz_right = (len(ts_right_command) - 1) / duration_right if duration_right > 0 else 0.0
     print(f"  Instruction: {instruction!r}")
-    print(f"  action-left: {len(actions_left)} frames, {duration_left:.1f}s at ~{hz_left:.0f} Hz")
-    print(f"  action-right: {len(actions_right)} frames, {duration_right:.1f}s at ~{hz_right:.0f} Hz")
+    print(f"  command-action-left: {len(actions_left)} frames, {duration_left:.1f}s at ~{hz_left:.0f} Hz")
+    print(f"  command-action-right: {len(actions_right)} frames, {duration_right:.1f}s at ~{hz_right:.0f} Hz")
 
     camera_frames: dict[str, np.ndarray] = {}
     camera_ts: dict[str, np.ndarray] = {}
@@ -818,9 +803,9 @@ def _load_delivered_episode_streams(
     streams = EpisodeStreams(
         episode_dir=episode_dir,
         actions_left=actions_left,
-        ts_left=ts_left_leader,
+        ts_left=ts_left_command,
         actions_right=actions_right,
-        ts_right=ts_right_leader,
+        ts_right=ts_right_command,
         camera_frames=camera_frames,
         camera_ts=camera_ts,
     )

@@ -509,7 +509,7 @@ class DatasetEpisodeContextTests(unittest.TestCase):
 
     @mock.patch("mcap_protobuf.decoder.DecoderFactory", autospec=True)
     @mock.patch("mcap.reader.make_reader", autospec=True)
-    def test_delivered_episode_uses_eef_leader_gripper_without_proprio(
+    def test_delivered_episode_uses_command_state_actions(
         self,
         make_reader_mock,
         _decoder_factory_mock,
@@ -522,14 +522,12 @@ class DatasetEpisodeContextTests(unittest.TestCase):
             make_reader_mock.return_value = _FakeDecodedReader(
                 [
                     _topic_msg("/instruction", data="sim_throw plastic bottles in bin"),
-                    _topic_msg("/left-arm-leader", position=[1, 2, 3, 4, 5, 6], timestamp=0.1),
-                    _topic_msg("/left-arm-leader", position=[7, 8, 9, 10, 11, 12], timestamp=0.2),
-                    _topic_msg("/right-arm-leader", position=[13, 14, 15, 16, 17, 18], timestamp=0.1),
-                    _topic_msg("/right-arm-leader", position=[19, 20, 21, 22, 23, 24], timestamp=0.2),
-                    _topic_msg("/left-eef-leader", position=[0.25], timestamp=0.1),
-                    _topic_msg("/left-eef-leader", position=[0.75], timestamp=0.2),
-                    _topic_msg("/right-eef-leader", position=[0.5], timestamp=0.1),
-                    _topic_msg("/right-eef-leader", position=[0.9], timestamp=0.2),
+                    _topic_msg("/left-arm-leader", position=[101, 102, 103, 104, 105, 106], timestamp=0.1),
+                    _topic_msg("/right-arm-leader", position=[113, 114, 115, 116, 117, 118], timestamp=0.1),
+                    _topic_msg("/left-command-state", position=[1, 2, 3, 4, 5, 6, 0.25], timestamp=0.1),
+                    _topic_msg("/left-command-state", position=[7, 8, 9, 10, 11, 12, 0.75], timestamp=0.2),
+                    _topic_msg("/right-command-state", position=[13, 14, 15, 16, 17, 18, 0.5], timestamp=0.1),
+                    _topic_msg("/right-command-state", position=[19, 20, 21, 22, 23, 24, 0.9], timestamp=0.2),
                 ]
             )
 
@@ -547,7 +545,7 @@ class DatasetEpisodeContextTests(unittest.TestCase):
 
     @mock.patch("mcap_protobuf.decoder.DecoderFactory", autospec=True)
     @mock.patch("mcap.reader.make_reader", autospec=True)
-    def test_delivered_episode_requires_eef_leader_gripper_streams(
+    def test_delivered_episode_requires_command_state_streams(
         self,
         make_reader_mock,
         _decoder_factory_mock,
@@ -567,7 +565,7 @@ class DatasetEpisodeContextTests(unittest.TestCase):
                 ]
             )
 
-            with self.assertRaisesRegex(ValueError, "missing leader gripper streams"):
+            with self.assertRaisesRegex(ValueError, "missing command-state action streams"):
                 _load_delivered_episode_streams(episode_dir, load_recorded_cameras=False)
 
     @mock.patch("xdof_sim.rendering.replay.episode.load_randomization", autospec=True)
@@ -635,7 +633,7 @@ class DatasetEpisodeContextTests(unittest.TestCase):
             np.testing.assert_allclose(context.initial_scene_integration_state, integration_state[0])
             self.assertEqual(context.raw_sim_state_spec, 16383)
 
-    def test_load_integration_states_drops_single_leading_timestamp_outlier(self) -> None:
+    def test_load_integration_states_preserves_recorded_frames(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             episode_dir = Path(tmpdir) / "episode_delivered"
             episode_dir.mkdir()
@@ -652,11 +650,11 @@ class DatasetEpisodeContextTests(unittest.TestCase):
 
             states, timestamps, wallclock_timestamps, state_spec = load_integration_states(episode_dir)
 
-            np.testing.assert_allclose(states, integration_state[1:])
-            np.testing.assert_allclose(timestamps, np.array([0.1, 0.2, 0.3], dtype=np.float64))
+            np.testing.assert_allclose(states, integration_state)
+            np.testing.assert_allclose(timestamps, np.array([3.0, 0.1, 0.2, 0.3], dtype=np.float64))
             np.testing.assert_allclose(
                 wallclock_timestamps,
-                np.array([100.1, 100.2, 100.3], dtype=np.float64),
+                np.array([100.0, 100.1, 100.2, 100.3], dtype=np.float64),
             )
             self.assertEqual(state_spec, 16383)
 
@@ -680,10 +678,10 @@ class DatasetEpisodeContextTests(unittest.TestCase):
             rand_state=None,
             raw_sim_states=np.array([[1.0], [2.0], [3.0], [4.0]], dtype=np.float64),
             raw_sim_timestamps=np.array([1_777_951_600.0, 1_777_951_600.05, 1_777_951_600.15, 1_777_951_600.25]),
-            raw_sim_integration_states=np.array([[10.0], [20.0], [30.0], [40.0]], dtype=np.float64),
-            raw_sim_integration_timestamps=np.array([132.226, 132.276, 132.376, 132.476], dtype=np.float64),
+            raw_sim_integration_states=np.array([[10.0], [20.0], [30.0], [40.0], [50.0]], dtype=np.float64),
+            raw_sim_integration_timestamps=np.array([132.226, 132.276, 132.376, 132.476, 132.576], dtype=np.float64),
             raw_sim_integration_wallclock_timestamps=np.array(
-                [1_777_951_600.0, 1_777_951_600.05, 1_777_951_600.15, 1_777_951_600.25],
+                [1_777_951_600.0, 1_777_951_600.05, 1_777_951_600.15, 1_777_951_600.25, 1_777_951_600.35],
                 dtype=np.float64,
             ),
             raw_sim_state_spec=16383,
@@ -693,7 +691,7 @@ class DatasetEpisodeContextTests(unittest.TestCase):
 
         np.testing.assert_allclose(timeline.grid_ts, np.array([0.0, 0.1, 0.2]))
         np.testing.assert_allclose(timeline.sim_states[:, 0], np.array([1.0, 2.0, 3.0]))
-        np.testing.assert_allclose(timeline.sim_integration_states[:, 0], np.array([10.0, 20.0, 30.0]))
+        np.testing.assert_allclose(timeline.sim_integration_states[:, 0], np.array([20.0, 30.0, 40.0]))
 
     @mock.patch("xdof_sim.rendering.replay.episode.load_randomization", autospec=True)
     @mock.patch("xdof_sim.rendering.replay.episode.load_sim_states", autospec=True)

@@ -109,6 +109,72 @@ def sample_hold_align(values: np.ndarray, timestamps: np.ndarray, query_ts: np.n
     return values[idx]
 
 
+def integration_states_on_action_clock(context: EpisodeContext) -> tuple[np.ndarray, np.ndarray] | None:
+    """Return integration states timestamped on the action clock.
+
+    Delivered command-state recordings include one initial integration frame at
+    recording start, followed by one post-step integration frame for each
+    command-state action sample. For those episodes, action i aligns with
+    integration_state[i + 1].
+    """
+    states = context.raw_sim_integration_states
+    if states is None:
+        return None
+
+    integration_ts = normalize_delivered_integration_timestamps(context)
+    if integration_ts is None:
+        return None
+    states = np.asarray(states, dtype=np.float64)
+
+    if context.episode_format != "delivered":
+        return states, integration_ts
+
+    ts_left = _as_timestamp_array(context.streams.ts_left, label="left command-state")
+    ts_right = _as_timestamp_array(context.streams.ts_right, label="right command-state")
+    if len(ts_left) != len(ts_right):
+        raise ValueError(
+            "Delivered command-state streams must have matching lengths: "
+            f"left={len(ts_left)}, right={len(ts_right)}"
+        )
+    if not np.allclose(ts_left, ts_right, rtol=0.0, atol=1e-6):
+        max_error_s = float(np.max(np.abs(ts_left - ts_right)))
+        raise ValueError(
+            "Delivered left/right command-state timestamps disagree: "
+            f"max_error={max_error_s:.6f}s"
+        )
+    if len(states) != len(ts_left) + 1:
+        raise ValueError(
+            "Delivered command-state alignment expects integration_state.npy to contain "
+            "one initial frame plus one post-step frame per command-state sample: "
+            f"integration={len(states)}, command={len(ts_left)}"
+        )
+
+    if context.raw_sim_integration_wallclock_timestamps is not None:
+        wallclock = _as_timestamp_array(
+            context.raw_sim_integration_wallclock_timestamps,
+            label="integration-state wallclock",
+        )
+        if len(wallclock) != len(states):
+            raise ValueError(
+                "integration-state wallclock length mismatch: "
+                f"{len(wallclock)} vs {len(states)}"
+            )
+        command_elapsed = ts_left - ts_left[0]
+        post_step_elapsed = wallclock[1:] - wallclock[1]
+        positive_steps = np.diff(ts_left)
+        positive_steps = positive_steps[positive_steps > 1e-9]
+        median_step = float(np.median(positive_steps)) if len(positive_steps) else 0.0
+        tolerance_s = max(0.01, 0.25 * median_step)
+        max_error_s = float(np.max(np.abs(post_step_elapsed - command_elapsed)))
+        if max_error_s > tolerance_s:
+            raise ValueError(
+                "Delivered command-state and integration_state.npy post-step clocks disagree: "
+                f"max_error={max_error_s:.6f}s, tolerance={tolerance_s:.6f}s"
+            )
+
+    return states[1:], ts_left
+
+
 def build_action_timeline(
     actions_left: np.ndarray,
     ts_left: np.ndarray,
@@ -156,13 +222,10 @@ def align_sim_integration_states(
     grid_ts: np.ndarray,
 ) -> np.ndarray | None:
     """Align mjSTATE_INTEGRATION snapshots to the replay clock."""
-    states = context.raw_sim_integration_states
-    if states is None:
+    series = integration_states_on_action_clock(context)
+    if series is None:
         return None
-
-    aligned_ts = normalize_delivered_integration_timestamps(context)
-    if aligned_ts is None:
-        return None
+    states, aligned_ts = series
     return sample_hold_align(states, aligned_ts, grid_ts)
 
 

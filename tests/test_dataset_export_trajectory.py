@@ -140,15 +140,16 @@ class ExportTrajectoryTests(unittest.TestCase):
                 **context.__dict__,
                 "raw_sim_integration_states": np.array(
                     [
+                        [0.0, 0.0, 0.0],
                         [10.0, 100.0, 1000.0],
                         [20.0, 200.0, 2000.0],
                         [30.0, 300.0, 3000.0],
                     ],
                     dtype=np.float64,
                 ),
-                "raw_sim_integration_timestamps": np.array([0.918, 1.418, 1.918], dtype=np.float64),
+                "raw_sim_integration_timestamps": np.array([0.418, 0.918, 1.418, 1.918], dtype=np.float64),
                 "raw_sim_integration_wallclock_timestamps": np.array(
-                    [1_700_000_000.0, 1_700_000_000.5, 1_700_000_001.0],
+                    [1_700_000_000.0, 1_700_000_000.5, 1_700_000_001.0, 1_700_000_001.5],
                     dtype=np.float64,
                 ),
                 "raw_sim_state_spec": 16383,

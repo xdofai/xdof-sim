@@ -14,6 +14,7 @@ from xdof_sim.dataset_export.metadata import (
 )
 from xdof_sim.dataset_export.types import ExportTrajectory
 from xdof_sim.rendering.replay.timeline import (
+    integration_states_on_action_clock,
     normalize_delivered_integration_timestamps,
     sample_hold_align,
 )
@@ -104,18 +105,18 @@ def build_export_trajectory(
     source_delivery: str | None = None,
 ) -> ExportTrajectory:
     """Build aligned states/actions/qpos on the requested export clock."""
-    integration_ts = normalize_integration_timestamps(context)
+    integration_series = integration_states_on_action_clock(context)
     if context.raw_sim_integration_states is None:
         raise ValueError(
             "Dataset export/render requires integration_state.npy; "
             "refusing to render from sim_state.mcap qpos."
         )
-    if integration_ts is None:
+    if integration_series is None:
         raise ValueError(
             "Dataset export/render requires integration_state.npy timestamps; "
             "refusing to render from sim_state.mcap qpos."
         )
-    state_ts = integration_ts
+    integration_states, state_ts = integration_series
 
     grid_ts = build_export_grid(
         starts=[
@@ -138,8 +139,8 @@ def build_export_trajectory(
         axis=1,
     )
     aligned_integration_states = sample_hold_align(
-        np.asarray(context.raw_sim_integration_states, dtype=np.float64),
-        integration_ts,
+        integration_states,
+        state_ts,
         grid_ts,
     )
     qpos = _extract_qpos_from_integration_states(
