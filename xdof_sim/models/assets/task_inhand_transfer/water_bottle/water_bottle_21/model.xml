@@ -1,0 +1,39 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mujoco model="water_bottle_0">
+  <asset>
+    <mesh file="visual/model_normalized_0.obj" name="model_normalized_0_vis" scale="0.17000000000000004 0.17000000000000004 0.17000000000000004" refquat="1.0 0.0 0.0 0.0" />
+    <mesh file="visual/model_normalized_1.obj" name="model_normalized_1_vis" scale="0.17000000000000004 0.17000000000000004 0.17000000000000004" refquat="1.0 0.0 0.0 0.0" />
+    <mesh file="visual/model_normalized_2.obj" name="model_normalized_2_vis" scale="0.17000000000000004 0.17000000000000004 0.17000000000000004" refquat="1.0 0.0 0.0 0.0" />
+    <material name="Metal.003" specular="0.5" shininess="0.492983719" rgba="0.800000 0.800000 0.800000 1.0" />
+    <material name="body.001" specular="0.5" shininess="0.12991717700000002" rgba="0.204028 0.950000 0.386672 1.0" />
+    <material name="rubber.002" specular="0.5" shininess="0.097218536" rgba="0.014645 0.017388 0.015814 1.0" />
+    <mesh file="collision/collision_mesh_collision_0.obj" name="water_collision_mesh_0" scale="0.17000000000000004 0.17000000000000004 0.17000000000000004" refquat="1.0 0.0 0.0 0.0" />
+    <mesh file="collision/collision_mesh_collision_1.obj" name="water_collision_mesh_1" scale="0.17000000000000004 0.17000000000000004 0.17000000000000004" refquat="1.0 0.0 0.0 0.0" />
+    <mesh file="collision/collision_mesh_collision_2.obj" name="water_collision_mesh_2" scale="0.17000000000000004 0.17000000000000004 0.17000000000000004" refquat="1.0 0.0 0.0 0.0" />
+    <mesh file="collision/collision_mesh_collision_3.obj" name="water_collision_mesh_3" scale="0.17000000000000004 0.17000000000000004 0.17000000000000004" refquat="1.0 0.0 0.0 0.0" />
+    <mesh file="collision/collision_mesh_collision_4.obj" name="water_collision_mesh_4" scale="0.17000000000000004 0.17000000000000004 0.17000000000000004" refquat="1.0 0.0 0.0 0.0" />
+    </asset>
+  <default>
+    <default class="region">
+      <geom group="1" conaffinity="0" contype="0" rgba="0 1 0 0" />
+      </default>
+    <default class="collision">
+      <geom group="0" rgba="0.5 0 0 0.5" density="1000.0" />
+      </default>
+    </default>
+  <worldbody>
+    <body>
+      <body name="object">
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_0_vis" conaffinity="0" contype="0" group="1" material="Metal.003" />
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_1_vis" conaffinity="0" contype="0" group="1" material="body.001" />
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_2_vis" conaffinity="0" contype="0" group="1" material="rubber.002" />
+        <geom class="region" name="reg_bbox" type="box" pos="0.00045572155000000016 9.367000000000405e-07 -0.0006204617499999954" size="0.023173655400000007 0.023175528800000005 0.08437953825000002" />
+        <geom mesh="water_collision_mesh_0" type="mesh" class="collision" />
+        <geom mesh="water_collision_mesh_1" type="mesh" class="collision" />
+        <geom mesh="water_collision_mesh_2" type="mesh" class="collision" />
+        <geom mesh="water_collision_mesh_3" type="mesh" class="collision" />
+        <geom mesh="water_collision_mesh_4" type="mesh" class="collision" />
+        </body>
+      </body>
+    </worldbody>
+  </mujoco>

@@ -1,0 +1,48 @@
+<mujoco model="can_29">
+  <asset>
+    <mesh file="visual/model_normalized_0.obj" name="model_normalized_0_vis" scale="0.11 0.11 0.11" refquat="0.7071067811865472 0.0 0.0 -0.7071067811865476"/>
+    <mesh file="visual/model_normalized_1.obj" name="model_normalized_1_vis" scale="0.11 0.11 0.11" refquat="0.7071067811865472 0.0 0.0 -0.7071067811865476"/>
+    <mesh file="visual/model_normalized_2.obj" name="model_normalized_2_vis" scale="0.11 0.11 0.11" refquat="0.7071067811865472 0.0 0.0 -0.7071067811865476"/>
+    <mesh file="visual/model_normalized_3.obj" name="model_normalized_3_vis" scale="0.11 0.11 0.11" refquat="0.7071067811865472 0.0 0.0 -0.7071067811865476"/>
+    <mesh file="visual/model_normalized_4.obj" name="model_normalized_4_vis" scale="0.11 0.11 0.11" refquat="0.7071067811865472 0.0 0.0 -0.7071067811865476"/>
+    <texture type="2d" name="image0" file="visual/image0.png"/>
+    <texture type="2d" name="image2" file="visual/image2.png"/>
+    <material name="858A-CL2" texture="image0" specular="0.5" shininess="0.15999998099999999"/>
+    <material name="Material_3K" texture="image0" specular="0.5" shininess="0.15999998099999999"/>
+    <material name="drops" texture="image0" specular="0.5" shininess="0.15999998099999999"/>
+    <material name="metal.002" texture="image0" specular="0.5" shininess="0.25"/>
+    <material name="metal_pepsi" texture="image2" specular="0.5" shininess="0.25"/>
+    <mesh file="collision/collision_mesh_collision_0.obj" name="can_collision_mesh_0" scale="0.11 0.11 0.11" refquat="0.7071067811865472 0.0 0.0 -0.7071067811865476"/>
+    <mesh file="collision/collision_mesh_collision_1.obj" name="can_collision_mesh_1" scale="0.11 0.11 0.11" refquat="0.7071067811865472 0.0 0.0 -0.7071067811865476"/>
+    <mesh file="collision/collision_mesh_collision_2.obj" name="can_collision_mesh_2" scale="0.11 0.11 0.11" refquat="0.7071067811865472 0.0 0.0 -0.7071067811865476"/>
+    <mesh file="collision/collision_mesh_collision_3.obj" name="can_collision_mesh_3" scale="0.11 0.11 0.11" refquat="0.7071067811865472 0.0 0.0 -0.7071067811865476"/>
+    <mesh file="collision/collision_mesh_collision_4.obj" name="can_collision_mesh_4" scale="0.11 0.11 0.11" refquat="0.7071067811865472 0.0 0.0 -0.7071067811865476"/>
+    <mesh file="collision/collision_mesh_collision_5.obj" name="can_collision_mesh_5" scale="0.11 0.11 0.11" refquat="0.7071067811865472 0.0 0.0 -0.7071067811865476"/>
+  </asset>
+  <default>
+    <default class="region">
+      <geom group="1" conaffinity="0" contype="0" rgba="0 1 0 0"/>
+    </default>
+    <default class="collision">
+      <geom group="0" rgba="0.5 0 0 0.5" density="1000.0"/>
+    </default>
+  </default>
+  <worldbody>
+    <body>
+      <body name="object">
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_0_vis" conaffinity="0" contype="0" group="1" material="metal_pepsi"/>
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_1_vis" conaffinity="0" contype="0" group="1" material="metal.002"/>
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_2_vis" conaffinity="0" contype="0" group="1" material="drops"/>
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_3_vis" conaffinity="0" contype="0" group="1" material="858A-CL2"/>
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_4_vis" conaffinity="0" contype="0" group="1" material="Material_3K"/>
+        <geom class="region" name="reg_bbox" type="box" pos="-2.6838899999999944e-05 -7.5812000000000105e-06 -2.94189499999975e-05" size="0.0290639668 0.029044548499999996 0.05543297265"/>
+        <geom mesh="can_collision_mesh_0" type="mesh" class="collision"/>
+        <geom mesh="can_collision_mesh_1" type="mesh" class="collision"/>
+        <geom mesh="can_collision_mesh_2" type="mesh" class="collision"/>
+        <geom mesh="can_collision_mesh_3" type="mesh" class="collision"/>
+        <geom mesh="can_collision_mesh_4" type="mesh" class="collision"/>
+        <geom mesh="can_collision_mesh_5" type="mesh" class="collision"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

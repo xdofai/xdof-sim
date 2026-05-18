@@ -1,0 +1,37 @@
+<mujoco model="model">
+  <option timestep="0.002" gravity="0.0 0.0 -9.81"/>
+  <compiler angle="radian"/>
+  <asset>
+    <mesh file="visual/PepperShaker010.obj" name="PepperShaker010_vis"/>
+    <texture file="visual/T_BC001.png" name="PepperShaker010_material" type="2d"/>
+    <material name="PepperShaker010_material" rgba="1 1 1 1.0" texture="PepperShaker010_material" shininess="0.4472135901451111" specular="0.3103448502657381"/>
+    <mesh file="collision/collision_mesh_collision_0.obj" name="PepperShaker010_collision_mesh_0"/>
+    <mesh file="collision/collision_mesh_collision_1.obj" name="PepperShaker010_collision_mesh_1"/>
+  </asset>
+  <default>
+    <default class="visual">
+      <geom conaffinity="0" contype="0" group="1" type="mesh"/>
+    </default>
+    <default class="collision">
+      <geom group="0" rgba="0.5 0 0 0.5" density="1000.0"/>
+    </default>
+    <default class="spawn">
+      <geom group="0" rgba="1 1 1 0.5" contype="0" conaffinity="0"/>
+      <site group="0" rgba="1 1 1 0.5"/>
+    </default>
+    <default class="region">
+      <geom group="1" conaffinity="0" contype="0" rgba="0 1 0 0" mass="0"/>
+    </default>
+  </default>
+  <worldbody>
+    <body>
+      <body name="object">
+        <geom mesh="PepperShaker010_vis" type="mesh" solimp="0.998 0.998 0.001" solref="0.001 1" friction="0.95 0.3 0.1" class="visual" material="PepperShaker010_material"/>
+        <geom class="region" name="reg_bbox" type="box" pos="0.0 -1.9999999999881224e-08 1.9950000000011625e-06" size="0.02550052 0.0254976 0.050543225"/>
+        <geom mesh="PepperShaker010_collision_mesh_0" type="mesh" class="collision"/>
+        <geom mesh="PepperShaker010_collision_mesh_1" type="mesh" class="collision"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator/>
+</mujoco>

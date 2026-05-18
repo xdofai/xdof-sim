@@ -1,0 +1,44 @@
+<mujoco model="model">
+  <compiler angle="radian"/>
+  <asset>
+    <mesh file="visual/CreamCheese011.obj" name="CreamCheese011_vis"/>
+    <texture file="visual/T_BC001.png" name="CreamCheese011_material" type="2d"/>
+    <material name="CreamCheese011_material" rgba="1 1 1 1.0" texture="CreamCheese011_material" shininess="0.10000002384185791" specular="0.33333333333333337"/>
+    <mesh file="collision/CreamCheese011001.obj" name="CreamCheese011001_mesh"/>
+    <mesh file="collision/CreamCheese011003.obj" name="CreamCheese011003_mesh"/>
+    <mesh file="collision/CreamCheese011006.obj" name="CreamCheese011006_mesh"/>
+    <mesh file="collision/CreamCheese011005.obj" name="CreamCheese011005_mesh"/>
+    <mesh file="collision/CreamCheese011002.obj" name="CreamCheese011002_mesh"/>
+    <mesh file="collision/CreamCheese011004.obj" name="CreamCheese011004_mesh"/>
+  </asset>
+  <default>
+    <default class="visual">
+      <geom conaffinity="0" contype="0" group="1" type="mesh"/>
+    </default>
+    <default class="collision">
+      <geom group="0" rgba="0.5 0 0 0.5"/>
+    </default>
+    <default class="spawn">
+      <geom group="0" rgba="1 1 1 0.5" contype="0" conaffinity="0"/>
+      <site group="0" rgba="1 1 1 0.5"/>
+    </default>
+    <default class="region">
+      <geom group="1" conaffinity="0" contype="0" rgba="0 1 0 0" mass="0"/>
+    </default>
+  </default>
+  <worldbody>
+    <body>
+      <body name="object">
+        <geom mesh="CreamCheese011_vis" type="mesh" solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" class="visual" material="CreamCheese011_material"/>
+        <geom mesh="CreamCheese011001_mesh" type="mesh" class="collision"/>
+        <geom mesh="CreamCheese011003_mesh" type="mesh" class="collision"/>
+        <geom mesh="CreamCheese011006_mesh" type="mesh" class="collision"/>
+        <geom mesh="CreamCheese011005_mesh" type="mesh" class="collision"/>
+        <geom mesh="CreamCheese011002_mesh" type="mesh" class="collision"/>
+        <geom mesh="CreamCheese011004_mesh" type="mesh" class="collision"/>
+        <geom class="region" name="reg_bbox" type="box" pos="-3.11500000000145e-06 5.050000000000367e-07 -9.595000000000003e-05" size="0.026751845 0.005130365 0.00503261"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator/>
+</mujoco>

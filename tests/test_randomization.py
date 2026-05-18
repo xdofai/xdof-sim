@@ -11,6 +11,7 @@ import xdof_sim
 from xdof_sim.randomization import (
     ChessRandomizer,
     DishRackRandomizer,
+    InHandTransferRandomizer,
     PourRandomizer,
     SweepRandomizer,
     WaterBottleRandomizer,
@@ -27,6 +28,7 @@ from xdof_sim.randomization import (
     _MUG_FLIP_SPAWN_CLEARANCE_M,
     _MUG_FLIP_TRAY_FLOOR_Z_OFFSET,
     _MUG_FLIP_TRAY_INNER_HALF_XY,
+    _INHAND_SCALE_FACTOR_RANGE,
     _mug_plain_color_material_names,
     _mug_variant_names,
     _water_bottle_variant_names,
@@ -755,7 +757,26 @@ class PourRandomizerTests(unittest.TestCase):
 
             for bead_name in randomizer._bead_joints:
                 bead_xy = np.asarray(state.object_states[bead_name]["pos"][:2], dtype=np.float64)
-                self.assertLess(float(np.linalg.norm(bead_xy - mug_xy)), 0.04)
+            self.assertLess(float(np.linalg.norm(bead_xy - mug_xy)), 0.04)
+
+
+class InHandTransferRandomizerTests(unittest.TestCase):
+    def test_scale_randomization_uses_wide_handover_range(self) -> None:
+        randomizer = InHandTransferRandomizer()
+        model = mujoco.MjModel.from_xml_path("xdof_sim/models/yam_inhand_transfer_base.xml")
+        data = mujoco.MjData(model)
+
+        low, high = _INHAND_SCALE_FACTOR_RANGE
+        scales = []
+        for seed in range(20):
+            state = randomizer.randomize(model, data, seed=seed)
+            scale = state.scale_states["task_object_joint"]
+            self.assertGreaterEqual(scale, low)
+            self.assertLessEqual(scale, high)
+            scales.append(scale)
+
+        self.assertLess(min(scales), 0.95)
+        self.assertGreater(max(scales), 1.05)
 
 
 class DishRackRandomizerBoundsTests(unittest.TestCase):

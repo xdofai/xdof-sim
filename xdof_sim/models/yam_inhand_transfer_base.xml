@@ -1,5 +1,5 @@
 <mujoco model="yam_inhand_transfer">
-  <compiler angle="radian" meshdir="assets" boundmass="0.001" boundinertia="0.001"/>
+  <compiler angle="radian" meshdir="assets" texturedir="assets"/>
 
   <option integrator="implicitfast"/>
 

@@ -10,11 +10,15 @@ import mujoco
 
 from xdof_sim.scene_xml import SceneXmlTransformOptions, build_scene_xml, transform_scene_xml
 from xdof_sim.randomization import (
+    INHAND_OBJECT_CATEGORIES,
     RandomizationState,
+    _INHAND_OBJECT_MASS_KG_BY_CATEGORY,
     _apply_object_scales_to_scene_xml,
     _build_chess_tin_scene_xml,
     _chess_tin_variant_names,
+    _inhand_asset_base,
     _inhand_build_xml,
+    _inhand_get_variants,
 )
 
 
@@ -258,6 +262,54 @@ class SceneXmlTests(unittest.TestCase):
 
         model = mujoco.MjModel.from_xml_string(xml)
         self.assertGreater(model.nbody, 0)
+
+    def test_inhand_transfer_assets_are_task_scoped(self) -> None:
+        expected_root = self._models_dir() / "assets" / "task_inhand_transfer"
+        for category in INHAND_OBJECT_CATEGORIES:
+            category_root = _inhand_asset_base(category) / category
+            self.assertEqual(category_root.parent, expected_root)
+            self.assertTrue(category_root.is_dir(), msg=category)
+            self.assertTrue(_inhand_get_variants(category), msg=category)
+
+        variant = _inhand_get_variants("dish_brush")[0]
+        xml = _inhand_build_xml("dish_brush", variant, x=0.6, y=0.2, z=0.8, yaw=0.0)
+        self.assertIn("assets/task_inhand_transfer/dish_brush", xml)
+        self.assertNotIn("assets_robocasa", xml)
+
+    def test_inhand_transfer_generated_objects_use_category_masses_and_mug_like_physics(self) -> None:
+        for category in INHAND_OBJECT_CATEGORIES:
+            variant = _inhand_get_variants(category)[0]
+            xml = _inhand_build_xml(category, variant, x=0.6, y=0.2, z=0.8, yaw=0.0)
+            model = mujoco.MjModel.from_xml_string(xml)
+
+            body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "task_object")
+            self.assertAlmostEqual(
+                float(model.body_mass[body_id]),
+                _INHAND_OBJECT_MASS_KG_BY_CATEGORY[category],
+                places=6,
+                msg=category,
+            )
+
+            geom_ids = [
+                geom_id
+                for geom_id in range(model.ngeom)
+                if model.geom_bodyid[geom_id] == body_id and model.geom_contype[geom_id] != 0
+            ]
+            self.assertGreater(len(geom_ids), 0, msg=category)
+            for geom_id in geom_ids:
+                self.assertEqual(int(model.geom_condim[geom_id]), 6, msg=category)
+                self.assertEqual(int(model.geom_priority[geom_id]), 1, msg=category)
+                self.assertEqual(
+                    tuple(float(v) for v in model.geom_friction[geom_id]),
+                    (3.0, 0.03, 0.003),
+                    msg=category,
+                )
+                self.assertEqual(tuple(float(v) for v in model.geom_solref[geom_id]), (0.004, 1.0), msg=category)
+                self.assertEqual(
+                    tuple(float(v) for v in model.geom_solimp[geom_id][:3]),
+                    (0.998, 0.998, 0.001),
+                    msg=category,
+                )
 
     def test_inhand_transfer_generated_xml_supports_vr_scene_transforms(self) -> None:
         mesh_path = self._models_dir() / "assets" / "i2rt_yam" / "assets" / "base_visual_gate.stl"

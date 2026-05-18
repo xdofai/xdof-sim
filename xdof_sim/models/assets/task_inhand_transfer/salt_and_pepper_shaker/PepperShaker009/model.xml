@@ -1,0 +1,43 @@
+<mujoco model="model">
+  <option timestep="0.002" gravity="0.0 0.0 -9.81"/>
+  <compiler angle="radian"/>
+  <asset>
+    <mesh file="visual/PepperShaker009.obj" name="PepperShaker009_vis"/>
+    <mesh file="visual/prop.obj" name="PepperShaker009_prop_vis"/>
+    <texture file="visual/T_BC001.png" name="PepperShaker009_material" type="2d"/>
+    <material name="PepperShaker009_material" rgba="1 1 1 1.0" texture="PepperShaker009_material" shininess="0.5" specular="0.3103448502657381"/>
+    <texture file="visual/T_BC001.png" name="PepperShaker009_prop_material" type="2d"/>
+    <material name="PepperShaker009_prop_material" rgba="1 1 1 1.0" texture="PepperShaker009_prop_material" shininess="0.1" specular="10"/>
+    <mesh file="collision/collision_mesh_collision_0.obj" name="PepperShaker009_collision_mesh_0"/>
+    <mesh file="collision/collision_mesh_collision_1.obj" name="PepperShaker009_collision_mesh_1"/>
+  </asset>
+  <default>
+    <default class="visual">
+      <geom conaffinity="0" contype="0" group="1" type="mesh"/>
+    </default>
+    <default class="collision">
+      <geom group="0" rgba="0.5 0 0 0.5" density="1000.0"/>
+    </default>
+    <default class="spawn">
+      <geom group="0" rgba="1 1 1 0.5" contype="0" conaffinity="0"/>
+      <site group="0" rgba="1 1 1 0.5"/>
+    </default>
+    <default class="region">
+      <geom group="1" conaffinity="0" contype="0" rgba="0 1 0 0" mass="0"/>
+    </default>
+  </default>
+  <worldbody>
+    <body>
+      <body name="object">
+        <geom mesh="PepperShaker009_vis" type="mesh" solimp="0.998 0.998 0.001" solref="0.001 1" friction="0.95 0.3 0.1" class="visual" material="PepperShaker009_material"/>
+        <body name="PepperShaker009_prop">
+          <geom mesh="PepperShaker009_prop_vis" type="mesh" solimp="0.998 0.998 0.001" solref="0.001 1" friction="0.95 0.3 0.1" class="visual" material="PepperShaker009_prop_material"/>
+        </body>
+        <geom class="region" name="reg_bbox" type="box" pos="0.0 4.999999999102944e-09 1.0449999999981308e-06" size="0.02090358 0.020899485000000002 0.050271245"/>
+        <geom mesh="PepperShaker009_collision_mesh_0" type="mesh" class="collision"/>
+        <geom mesh="PepperShaker009_collision_mesh_1" type="mesh" class="collision"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator/>
+</mujoco>

@@ -1,0 +1,76 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mujoco model="water_bottle_20">
+  <asset>
+    <mesh file="visual/model_normalized_0.obj" name="model_normalized_0_vis" scale="0.135 0.135 0.135" refquat="1.0 0.0 0.0 0.0" />
+    <mesh file="visual/model_normalized_1.obj" name="model_normalized_1_vis" scale="0.135 0.135 0.135" refquat="1.0 0.0 0.0 0.0" />
+    <mesh file="visual/model_normalized_2.obj" name="model_normalized_2_vis" scale="0.135 0.135 0.135" refquat="1.0 0.0 0.0 0.0" />
+    <mesh file="visual/model_normalized_3.obj" name="model_normalized_3_vis" scale="0.135 0.135 0.135" refquat="1.0 0.0 0.0 0.0" />
+    <mesh file="visual/model_normalized_4.obj" name="model_normalized_4_vis" scale="0.135 0.135 0.135" refquat="1.0 0.0 0.0 0.0" />
+    <mesh file="visual/model_normalized_5.obj" name="model_normalized_5_vis" scale="0.135 0.135 0.135" refquat="1.0 0.0 0.0 0.0" />
+    <mesh file="visual/model_normalized_6.obj" name="model_normalized_6_vis" scale="0.135 0.135 0.135" refquat="1.0 0.0 0.0 0.0" />
+    <mesh file="visual/model_normalized_7.obj" name="model_normalized_7_vis" scale="0.135 0.135 0.135" refquat="1.0 0.0 0.0 0.0" />
+    <mesh file="visual/model_normalized_8.obj" name="model_normalized_8_vis" scale="0.135 0.135 0.135" refquat="1.0 0.0 0.0 0.0" />
+    <mesh file="visual/model_normalized_9.obj" name="model_normalized_9_vis" scale="0.135 0.135 0.135" refquat="1.0 0.0 0.0 0.0" />
+    <mesh file="visual/model_normalized_10.obj" name="model_normalized_10_vis" scale="0.135 0.135 0.135" refquat="1.0 0.0 0.0 0.0" />
+    <mesh file="visual/model_normalized_11.obj" name="model_normalized_11_vis" scale="0.135 0.135 0.135" refquat="1.0 0.0 0.0 0.0" />
+    <texture type="2d" name="image0" file="visual/image0.png" />
+    <texture type="2d" name="image20" file="visual/image20.png" />
+    <texture type="2d" name="image35" file="visual/image35.png" />
+    <texture type="2d" name="image4" file="visual/image4.png" />
+    <texture type="2d" name="image7" file="visual/image7.png" />
+    <texture type="2d" name="image10" file="visual/image10.png" />
+    <texture type="2d" name="image14" file="visual/image14.png" />
+    <texture type="2d" name="image17" file="visual/image17.png" />
+    <texture type="2d" name="image24" file="visual/image24.png" />
+    <texture type="2d" name="image27" file="visual/image27.png" />
+    <texture type="2d" name="image23" file="visual/image23.png" />
+    <texture type="2d" name="image32" file="visual/image32.png" />
+    <material name="Base.002" texture="image0" specular="0.5" shininess="0.25" />
+    <material name="Base.003" texture="image20" specular="0.5" shininess="0.25" />
+    <material name="Material.017" texture="image35" specular="0.5" shininess="0.25" />
+    <material name="Material.018" texture="image4" specular="0.5" shininess="0.25" />
+    <material name="Material.019" texture="image7" specular="0.5" shininess="0.25" />
+    <material name="Material.020" texture="image10" specular="0.5" shininess="0.25" />
+    <material name="Material.021" texture="image14" specular="0.5" shininess="0.25" />
+    <material name="Material.022" texture="image17" specular="0.5" shininess="0.25" />
+    <material name="Material.023" texture="image24" specular="0.5" shininess="0.25" />
+    <material name="Material.024" texture="image27" specular="0.5" shininess="0.25" />
+    <material name="Metal.002" texture="image23" specular="0.5" shininess="0.25" />
+    <material name="Rubber.001" texture="image32" specular="0.5" shininess="0.25" />
+    <mesh file="collision/collision_mesh_collision_0.obj" name="water_collision_mesh_0" scale="0.135 0.135 0.135" refquat="1.0 0.0 0.0 0.0" />
+    <mesh file="collision/collision_mesh_collision_1.obj" name="water_collision_mesh_1" scale="0.135 0.135 0.135" refquat="1.0 0.0 0.0 0.0" />
+    <mesh file="collision/collision_mesh_collision_2.obj" name="water_collision_mesh_2" scale="0.135 0.135 0.135" refquat="1.0 0.0 0.0 0.0" />
+    <mesh file="collision/collision_mesh_collision_3.obj" name="water_collision_mesh_3" scale="0.135 0.135 0.135" refquat="1.0 0.0 0.0 0.0" />
+    </asset>
+  <default>
+    <default class="region">
+      <geom group="1" conaffinity="0" contype="0" rgba="0 1 0 0" />
+      </default>
+    <default class="collision">
+      <geom group="0" rgba="0.5 0 0 0.5" density="1000.0" />
+      </default>
+    </default>
+  <worldbody>
+    <body>
+      <body name="object">
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_0_vis" conaffinity="0" contype="0" group="1" material="Material.024" />
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_1_vis" conaffinity="0" contype="0" group="1" material="Material.023" />
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_2_vis" conaffinity="0" contype="0" group="1" material="Base.003" />
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_3_vis" conaffinity="0" contype="0" group="1" material="Material.022" />
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_4_vis" conaffinity="0" contype="0" group="1" material="Material.021" />
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_5_vis" conaffinity="0" contype="0" group="1" material="Material.020" />
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_6_vis" conaffinity="0" contype="0" group="1" material="Material.019" />
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_7_vis" conaffinity="0" contype="0" group="1" material="Material.018" />
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_8_vis" conaffinity="0" contype="0" group="1" material="Material.017" />
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_9_vis" conaffinity="0" contype="0" group="1" material="Rubber.001" />
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_10_vis" conaffinity="0" contype="0" group="1" material="Metal.002" />
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_11_vis" conaffinity="0" contype="0" group="1" material="Base.002" />
+        <geom class="region" name="reg_bbox" type="box" pos="0.00019869299999999938 -0.0002024541 -0.0002101328999999999" size="0.0199348965 0.019529953199999995 0.06728986710000001" />
+        <geom mesh="water_collision_mesh_0" type="mesh" class="collision" />
+        <geom mesh="water_collision_mesh_1" type="mesh" class="collision" />
+        <geom mesh="water_collision_mesh_2" type="mesh" class="collision" />
+        <geom mesh="water_collision_mesh_3" type="mesh" class="collision" />
+        </body>
+      </body>
+    </worldbody>
+  </mujoco>

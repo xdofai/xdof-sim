@@ -1,5 +1,5 @@
 <mujoco model="yam_bimanual">
-  <compiler angle="radian" meshdir="assets" boundmass="0.0001" boundinertia="0.000001"/>
+  <compiler angle="radian" meshdir="assets" texturedir="assets"/>
 
   <option integrator="implicitfast" iterations="50" ls_iterations="25" cone="pyramidal" noslip_iterations="0"/>
 

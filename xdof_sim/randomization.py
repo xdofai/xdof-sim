@@ -4902,8 +4902,7 @@ _DISHRACK_PLATE_WRAPPER_XY: tuple[tuple[float, float], ...] = (
 )
 _DISHRACK_PLATE_WRAPPER_Z: float = 0.75
 _BASE_SCENE_XML = _MODELS_DIR / "yam_inhand_transfer_base.xml"
-_LIGHTWHEEL_BASE = _MODELS_DIR / "assets_robocasa" / "objects_lightwheel" / "lightwheel"
-_OBJAVERSE_BASE = _MODELS_DIR / "assets_robocasa" / "objaverse" / "objaverse"
+_INHAND_TASK_ASSET_ROOT = _MODELS_DIR / "assets" / "task_inhand_transfer"
 _MUG_DEFAULT_VARIANT = "mug_0"
 _MUG_BASE_SCENE_XMLS: dict[str, _Path] = {
     "mug_flip": _MODELS_DIR / "yam_mug_flip_scene.xml",
@@ -4937,23 +4936,34 @@ _MUG_FLIP_TRAY_MARGIN_M = 0.004
 _MUG_FLIP_TRAY_FLOOR_Z_OFFSET = 0.008
 _MUG_FLIP_SPAWN_CLEARANCE_M = 0.004
 _MUG_FLIP_MUG_MARGIN_M = 0.004
-_OBJAVERSE_CATEGORIES = {"rolling_pin", "water_bottle", "can", "ladle"}
 # Approved object categories for the inhand_transfer task.
 # Edit this list to add/remove objects from the randomization pool.
 INHAND_OBJECT_CATEGORIES: list[str] = [
-    # lightwheel pack
+    # copied from the lightwheel RoboCasa pack
     "dish_brush", "whisk", "salt_and_pepper_shaker", "cream_cheese_stick",
     "cheese_grater", "pizza_cutter",
-    # objaverse pack
+    # copied from the objaverse RoboCasa pack
     "rolling_pin", "water_bottle", "can", "ladle",
 ]
 _INHAND_CATEGORIES = INHAND_OBJECT_CATEGORIES  # internal alias
-_OBJ_DENSITY = 30.0
+_INHAND_OBJECT_MASS_KG_BY_CATEGORY: dict[str, float] = {
+    "cream_cheese_stick": 0.02,
+    "ladle": 0.03,
+    "whisk": 0.035,
+    "pizza_cutter": 0.04,
+    "dish_brush": 0.05,
+    "water_bottle": 0.05,
+    "rolling_pin": 0.06,
+    "salt_and_pepper_shaker": 0.07,
+    "can": 0.08,
+    "cheese_grater": 0.10,
+}
 _CATEGORY_MESH_SCALE: dict[str, str] = {"wooden_spoon": "1 1 2.5"}
 _X_MIN, _X_MAX = 0.42, 0.78
 _Y_LEFT_MIN, _Y_LEFT_MAX = 0.10, 0.40
 _Y_RIGHT_MIN, _Y_RIGHT_MAX = -0.40, -0.10
 _OBJ_Z = 0.82
+_INHAND_SCALE_FACTOR_RANGE = (0.90, 1.20)
 
 
 @_lru_cache(maxsize=None)
@@ -6388,7 +6398,7 @@ def _build_water_bottle_scene_xml(
 
 
 def _inhand_asset_base(category: str) -> _Path:
-    return _OBJAVERSE_BASE if category in _OBJAVERSE_CATEGORIES else _LIGHTWHEEL_BASE
+    return _INHAND_TASK_ASSET_ROOT
 
 
 def _inhand_get_variants(category: str) -> list[_Path]:
@@ -6497,11 +6507,14 @@ def _inhand_build_xml(
         lines_body.append(
             f'      <geom type="mesh" {mesh_attr}{mat_attr} contype="0" conaffinity="0" group="2"'
             f' density="0" solimp="0.998 0.998 0.001" solref="0.001 1"/>')
+    object_mass = _INHAND_OBJECT_MASS_KG_BY_CATEGORY.get(category, 0.05)
+    collision_mass = object_mass / max(len(parsed["col_geoms"]), 1)
     for cg in parsed["col_geoms"]:
         mesh_attr = f'mesh="{prefix}_{cg["mesh"]}"' if cg["mesh"] else ""
         lines_body.append(
-            f'      <geom type="mesh" {mesh_attr} group="3" density="{_OBJ_DENSITY}"'
-            f' friction="3.0 0.3 0.05" solimp="0.95 0.99 0.001" solref="0.004 1"/>')
+            f'      <geom type="mesh" {mesh_attr} group="3" density="0" mass="{collision_mass:.8f}"'
+            f' condim="6" friction="3.0 0.03 0.003" solimp="0.998 0.998 0.001"'
+            f' solref="0.004 1" priority="1"/>')
     lines_body.append("    </body>")
 
     result = base_text.replace("<!-- TASK_ASSETS_PLACEHOLDER -->", "\n".join(lines_asset))
@@ -6565,7 +6578,7 @@ class InHandTransferRandomizer(SceneRandomizer):
         y = float(self._rng.uniform(_Y_LEFT_MIN, _Y_LEFT_MAX) if side == "left"
                   else self._rng.uniform(_Y_RIGHT_MIN, _Y_RIGHT_MAX))
         yaw = float(self._rng.uniform(-np.pi, np.pi))
-        scale_factor = float(self._rng.uniform(0.95, 1.05))
+        scale_factor = float(self._rng.uniform(*_INHAND_SCALE_FACTOR_RANGE))
 
         xml = _inhand_build_xml(
             category,

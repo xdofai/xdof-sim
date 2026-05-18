@@ -1,0 +1,43 @@
+<mujoco model="model">
+  <option timestep="0.002" gravity="0.0 0.0 -9.81"/>
+  <compiler angle="radian"/>
+  <asset>
+    <mesh file="visual/PizzaCutter003.obj" name="PizzaCutter003_vis"/>
+    <mesh file="visual/Prop.obj" name="PizzaCutter003_Prop_vis"/>
+    <texture file="visual/T_BC001.png" name="PizzaCutter003_material" type="2d"/>
+    <material name="PizzaCutter003_material" rgba="1 1 1 1.0" texture="PizzaCutter003_material" shininess="0.141421377658844" specular="0.3103448502657381"/>
+    <texture file="visual/T_BC001.png" name="PizzaCutter003_Prop_material" type="2d"/>
+    <material name="PizzaCutter003_Prop_material" rgba="1 1 1 1.0" texture="PizzaCutter003_Prop_material" shininess="1" specular="1"/>
+    <mesh file="collision/collision_mesh_collision_0.obj" name="PizzaCutter003_collision_mesh_0"/>
+    <mesh file="collision/collision_mesh_collision_1.obj" name="PizzaCutter003_collision_mesh_1"/>
+  </asset>
+  <default>
+    <default class="visual">
+      <geom conaffinity="0" contype="0" group="1" type="mesh"/>
+    </default>
+    <default class="collision">
+      <geom group="0" rgba="0.5 0 0 0.5" density="1.0" solref="0.004 1" solimp="0.998 0.998 0.001"/>
+    </default>
+    <default class="spawn">
+      <geom group="0" rgba="1 1 1 0.5" contype="0" conaffinity="0"/>
+      <site group="0" rgba="1 1 1 0.5"/>
+    </default>
+    <default class="region">
+      <geom group="1" conaffinity="0" contype="0" rgba="0 1 0 0" mass="0"/>
+    </default>
+  </default>
+  <worldbody>
+    <body>
+      <body name="object">
+        <geom mesh="PizzaCutter003_vis" type="mesh" solimp="0.998 0.998 0.001" solref="0.001 1" friction="0.95 0.3 0.1" class="visual" material="PizzaCutter003_material"/>
+        <body name="PizzaCutter003_Prop">
+          <geom mesh="PizzaCutter003_Prop_vis" type="mesh" solimp="0.998 0.998 0.001" solref="0.001 1" friction="0.95 0.3 0.1" class="visual" material="PizzaCutter003_Prop_material"/>
+        </body>
+        <geom class="region" name="reg_bbox" type="box" pos="-8.760000000000018e-06 -0.00023288000000000475 1.9249999999998435e-06" size="0.0471718 0.11889925 0.014624385"/>
+        <geom mesh="PizzaCutter003_collision_mesh_0" type="mesh" class="collision"/>
+        <geom mesh="PizzaCutter003_collision_mesh_1" type="mesh" class="collision"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator/>
+</mujoco>

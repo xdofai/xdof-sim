@@ -1,0 +1,48 @@
+<mujoco model="ladle_5">
+  <asset>
+    <mesh file="visual/model_normalized_0.obj" name="model_normalized_0_vis" scale="0.21000000000000002 0.21000000000000002 0.21000000000000002" refquat="0.034696085253970374 -0.034696085253970416 -0.7062550401009893 0.7062550401009896"/>
+    <material name="Default" specular="0.5" shininess="0.902912463" rgba="1.000000 1.000000 1.000000 1.0"/>
+    <mesh file="collision/collision_mesh_collision_0.obj" name="ladle_collision_mesh_0" scale="0.21000000000000002 0.21000000000000002 0.21000000000000002" refquat="0.034696085253970374 -0.034696085253970416 -0.7062550401009893 0.7062550401009896"/>
+    <mesh file="collision/collision_mesh_collision_1.obj" name="ladle_collision_mesh_1" scale="0.21000000000000002 0.21000000000000002 0.21000000000000002" refquat="0.034696085253970374 -0.034696085253970416 -0.7062550401009893 0.7062550401009896"/>
+    <mesh file="collision/collision_mesh_collision_2.obj" name="ladle_collision_mesh_2" scale="0.21000000000000002 0.21000000000000002 0.21000000000000002" refquat="0.034696085253970374 -0.034696085253970416 -0.7062550401009893 0.7062550401009896"/>
+    <mesh file="collision/collision_mesh_collision_3.obj" name="ladle_collision_mesh_3" scale="0.21000000000000002 0.21000000000000002 0.21000000000000002" refquat="0.034696085253970374 -0.034696085253970416 -0.7062550401009893 0.7062550401009896"/>
+    <mesh file="collision/collision_mesh_collision_4.obj" name="ladle_collision_mesh_4" scale="0.21000000000000002 0.21000000000000002 0.21000000000000002" refquat="0.034696085253970374 -0.034696085253970416 -0.7062550401009893 0.7062550401009896"/>
+    <mesh file="collision/collision_mesh_collision_5.obj" name="ladle_collision_mesh_5" scale="0.21000000000000002 0.21000000000000002 0.21000000000000002" refquat="0.034696085253970374 -0.034696085253970416 -0.7062550401009893 0.7062550401009896"/>
+    <mesh file="collision/collision_mesh_collision_6.obj" name="ladle_collision_mesh_6" scale="0.21000000000000002 0.21000000000000002 0.21000000000000002" refquat="0.034696085253970374 -0.034696085253970416 -0.7062550401009893 0.7062550401009896"/>
+    <mesh file="collision/collision_mesh_collision_7.obj" name="ladle_collision_mesh_7" scale="0.21000000000000002 0.21000000000000002 0.21000000000000002" refquat="0.034696085253970374 -0.034696085253970416 -0.7062550401009893 0.7062550401009896"/>
+    <mesh file="collision/collision_mesh_collision_8.obj" name="ladle_collision_mesh_8" scale="0.21000000000000002 0.21000000000000002 0.21000000000000002" refquat="0.034696085253970374 -0.034696085253970416 -0.7062550401009893 0.7062550401009896"/>
+    <mesh file="collision/collision_mesh_collision_9.obj" name="ladle_collision_mesh_9" scale="0.21000000000000002 0.21000000000000002 0.21000000000000002" refquat="0.034696085253970374 -0.034696085253970416 -0.7062550401009893 0.7062550401009896"/>
+    <mesh file="collision/collision_mesh_collision_10.obj" name="ladle_collision_mesh_10" scale="0.21000000000000002 0.21000000000000002 0.21000000000000002" refquat="0.034696085253970374 -0.034696085253970416 -0.7062550401009893 0.7062550401009896"/>
+    <mesh file="collision/collision_mesh_collision_11.obj" name="ladle_collision_mesh_11" scale="0.21000000000000002 0.21000000000000002 0.21000000000000002" refquat="0.034696085253970374 -0.034696085253970416 -0.7062550401009893 0.7062550401009896"/>
+    <mesh file="collision/collision_mesh_collision_12.obj" name="ladle_collision_mesh_12" scale="0.21000000000000002 0.21000000000000002 0.21000000000000002" refquat="0.034696085253970374 -0.034696085253970416 -0.7062550401009893 0.7062550401009896"/>
+  </asset>
+  <default>
+    <default class="region">
+      <geom group="1" conaffinity="0" contype="0" rgba="0 1 0 0"/>
+    </default>
+    <default class="collision">
+      <geom group="0" rgba="0.5 0 0 0.5" density="1000.0"/>
+    </default>
+  </default>
+  <worldbody>
+    <body>
+      <body name="object">
+        <geom solimp="0.998 0.998 0.001" solref="0.001 1" density="100" friction="0.95 0.3 0.1" type="mesh" mesh="model_normalized_0_vis" conaffinity="0" contype="0" group="1" material="Default"/>
+        <geom class="region" name="reg_bbox" type="box" pos="-0.0008271403514444695 0.00023534401196857738 0.0003850709638353256" size="0.02618583508518787 0.10584773064807854 0.03419201872616409"/>
+        <geom mesh="ladle_collision_mesh_0" type="mesh" class="collision"/>
+        <geom mesh="ladle_collision_mesh_1" type="mesh" class="collision"/>
+        <geom mesh="ladle_collision_mesh_2" type="mesh" class="collision"/>
+        <geom mesh="ladle_collision_mesh_3" type="mesh" class="collision"/>
+        <geom mesh="ladle_collision_mesh_4" type="mesh" class="collision"/>
+        <geom mesh="ladle_collision_mesh_5" type="mesh" class="collision"/>
+        <geom mesh="ladle_collision_mesh_6" type="mesh" class="collision"/>
+        <geom mesh="ladle_collision_mesh_7" type="mesh" class="collision"/>
+        <geom mesh="ladle_collision_mesh_8" type="mesh" class="collision"/>
+        <geom mesh="ladle_collision_mesh_9" type="mesh" class="collision"/>
+        <geom mesh="ladle_collision_mesh_10" type="mesh" class="collision"/>
+        <geom mesh="ladle_collision_mesh_11" type="mesh" class="collision"/>
+        <geom mesh="ladle_collision_mesh_12" type="mesh" class="collision"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

@@ -487,19 +487,33 @@ Total currently available variants: `112`
   - `yaw ~ U(-pi, pi)`
   - fixed object height `z = 0.82`
 - Sample object size:
-  - `scale ~ U(0.95, 1.05)`
+  - `scale ~ U(0.90, 1.20)`
 
 #### XML build behavior
 
 - Start from `yam_inhand_transfer_base.xml`
-- Parse the chosen object's `model.xml`
+- Parse the chosen object's `model.xml` from
+  `assets/task_inhand_transfer/<category>/<variant>/`
 - Copy its meshes, textures, and materials into the scene
 - Insert a single free-jointed `task_object` body
 - Assign collision properties to every imported collision geom:
-  - `density = 30.0`
-  - `friction = "3.0 0.3 0.05"`
-  - `solimp = "0.95 0.99 0.001"`
+  - category-level total object mass, distributed over collision geoms:
+    - `cream_cheese_stick`: `0.02 kg`
+    - `ladle`: `0.03 kg`
+    - `whisk`: `0.035 kg`
+    - `pizza_cutter`: `0.04 kg`
+    - `dish_brush`: `0.05 kg`
+    - `water_bottle`: `0.05 kg`
+    - `rolling_pin`: `0.06 kg`
+    - `salt_and_pepper_shaker`: `0.07 kg`
+    - `can`: `0.08 kg`
+    - `cheese_grater`: `0.10 kg`
+  - `density = 0`
+  - `condim = 6`
+  - `friction = "3.0 0.03 0.003"`
+  - `solimp = "0.998 0.998 0.001"`
   - `solref = "0.004 1"`
+  - `priority = 1`
 
 #### Important difference from the other 9 families
 
